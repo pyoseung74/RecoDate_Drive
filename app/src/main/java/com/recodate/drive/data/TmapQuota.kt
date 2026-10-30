@@ -34,9 +34,8 @@ class TmapQuota(
         val usedDay = store.get(d)
         val usedMonth = store.get(m)
         if (usedDay >= dailyLimit(api) || usedMonth >= monthlyLimit(api)) return false
-        store.put(d, usedDay + 1)
-        store.put(m, usedMonth + 1)
-        return true
+        // 하루·한 달 카운터를 한 번에 저장한다. 저장이 확인되지 않으면 호출하지 않는다(덜 세는 일이 없도록).
+        return store.putAll(mapOf(d to usedDay + 1, m to usedMonth + 1))
     }
 
     fun usedToday(api: TmapApi) = store.get(dayKey(api))
@@ -68,20 +67,39 @@ class TmapQuotaExceeded(api: TmapApi) : RuntimeException("TMAP ${api.label} 한�
 
 interface QuotaStore {
     fun get(key: String): Int
-    fun put(key: String, value: Int)
+    /** 여러 값을 한 번에(원자적으로) 저장한다. 디스크에 기록됐으면 true */
+    fun putAll(values: Map<String, Int>): Boolean
 }
 
-/** 앱을 껐다 켜도 유지되는 저장소. commit()으로 즉시 기록한다 */
+/**
+ * 앱을 껐다 켜도 유지되는 저장소.
+ * 한 번의 commit()으로 두 값을 함께 기록한다(SharedPreferences는 파일을 통째로 바꿔 써서
+ * 중간에 꺼져도 두 값이 같이 남거나 같이 안 남는다). commit()이 실패하면 false.
+ * 지난 날짜·지난달 키는 같은 커밋에서 지운다.
+ */
 class PrefsQuotaStore(context: Context) : QuotaStore {
     private val prefs = context.getSharedPreferences("tmap_quota", Context.MODE_PRIVATE)
     override fun get(key: String) = prefs.getInt(key, 0)
-    override fun put(key: String, value: Int) {
-        prefs.edit().putInt(key, value).commit()
-    }
+
+    override fun putAll(values: Map<String, Int>): Boolean = runCatching {
+        val editor = prefs.edit()
+        // 키 형식 "d:날짜:API" / "m:월:API". 같은 종류·같은 API인데 기간이 지난 키는 지운다.
+        fun kindAndApi(k: String) = k.substringBefore(":") + ":" + k.substringAfterLast(":")
+        val current = values.keys.map(::kindAndApi).toSet()
+        prefs.all.keys
+            .filter { it !in values.keys && kindAndApi(it) in current }
+            .forEach { editor.remove(it) }
+        values.forEach { (k, v) -> editor.putInt(k, v) }
+        editor.commit()
+    }.getOrDefault(false)
 }
 
 class MemoryQuotaStore : QuotaStore {
     private val map = mutableMapOf<String, Int>()
+    var failWrites = false
     override fun get(key: String) = map[key] ?: 0
-    override fun put(key: String, value: Int) { map[key] = value }
+    override fun putAll(values: Map<String, Int>): Boolean {
+        if (failWrites) return false
+        map.putAll(values); return true
+    }
 }

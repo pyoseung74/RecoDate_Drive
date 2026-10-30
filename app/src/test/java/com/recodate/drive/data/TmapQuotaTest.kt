@@ -47,6 +47,21 @@ class TmapQuotaTest {
     }
 
     @Test
+    fun storageFailure_blocksTheCall() {
+        val store = MemoryQuotaStore().apply { failWrites = true }
+        val q = quota(store)
+        assertFalse("저장 실패면 호출하면 안 됨", q.tryAcquire(TmapApi.POI))
+        assertEquals(0, q.usedToday(TmapApi.POI))
+    }
+
+    @Test
+    fun dayAndMonthAreWrittenTogether() {
+        val q = quota()
+        repeat(3) { q.tryAcquire(TmapApi.POI) }
+        assertEquals(q.usedToday(TmapApi.POI), q.usedThisMonth(TmapApi.POI))
+    }
+
+    @Test
     fun overrideCanLowerButNotExceedHardCeiling() {
         assertEquals(10, quota(override = mapOf(TmapApi.ROUTE to 10)).dailyLimit(TmapApi.ROUTE))
         assertEquals(800, quota(override = mapOf(TmapApi.ROUTE to 999_999)).dailyLimit(TmapApi.ROUTE))
