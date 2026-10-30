@@ -37,6 +37,8 @@ sealed interface NaviEvent {
     data class Arrived(val name: String, override val at: Long = now()) : NaviEvent
     data class WaypointArrived(val name: String, override val at: Long = now()) : NaviEvent
     data class Error(val message: String, override val at: Long = now()) : NaviEvent
+    /** 내비 안내 상태가 바뀜. guiding = 경로 안내 중(ROUTE_DRIVE) */
+    data class StatusChanged(val guiding: Boolean, override val at: Long = now()) : NaviEvent
 }
 
 /**
@@ -98,6 +100,7 @@ class PleosNaviGateway(context: Context) : NaviGateway {
         override fun onNavigationStatus(status: NavigationStatus) {
             Log.d(TAG, "onNavigationStatus $status")
             navigationStatus = status
+            _events.tryEmit(NaviEvent.StatusChanged(status == NavigationStatus.ROUTE_DRIVE))
         }
         override fun onRouteStarted(info: RouteStartInfo) {
             Log.d(TAG, "onRouteStarted name='${info.name}'")
@@ -231,6 +234,7 @@ class DemoNaviGateway : NaviGateway {
     override fun startRoute(target: NaviTarget): Boolean {
         lastTarget = target
         _events.tryEmit(NaviEvent.RouteStarted(target.name))
+        _events.tryEmit(NaviEvent.StatusChanged(true))
         return true
     }
 

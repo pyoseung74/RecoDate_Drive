@@ -99,6 +99,7 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     private var requestSeq = 0
     private var requestSentAt = 0L
     private var routeGateway: NaviGateway? = null
+    private var verifyJob: Job? = null
     private var lastDrive: DriveState = DriveState.UNKNOWN
 
     init {
@@ -185,12 +186,13 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     }
 
     /**
-     * 경로를 요청하고 "요청 중"으로 둔다. 내비가 RouteStarted를 보내면 "안내 중",
-     * Error를 보내거나 25초 안에 답이 없으면 "실패"가 된다. (에뮬레이터에서 시작까지 약 7초)
+     * 경로를 요청하고 "요청 중"으로 둔다. 내비 상태로 안내가 확인되면 "안내 중",
+     * Error를 보내거나 25초 뒤 마지막 확인에서도 안내 중이 아니면 "실패"가 된다. (에뮬레이터에서 시작까지 약 7초)
      * Pleos 차량에서는 내비가 연결되지 않았을 때 데모 내비로 넘어가지 않는다.
      */
     private fun requestRoute(stopIndex: Int, target: NaviTarget) {
         routeTimeoutJob?.cancel()
+        verifyJob?.cancel()
         val gateway: NaviGateway? = when {
             c.navi.connected.value -> c.navi
             !c.isAutomotive -> c.demoNavi
@@ -205,10 +207,13 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             failRoute(if (gateway == null) "차량 내비에 연결되지 않았어요" else "내비에 경로 요청을 보내지 못했어요")
             return
         }
+        val seq = requestSeq
         routeTimeoutJob = viewModelScope.launch {
             delay(ROUTE_TIMEOUT_MS)
-            val p = _ui.value.phase
-            if (p is RunPhase.DrivingTo && p.route == RouteStatus.REQUESTING) failRoute("내비가 응답하지 않아요")
+            val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
+            if (seq != requestSeq || p.route != RouteStatus.REQUESTING) return@launch
+            // 실패로 바꾸기 전에 내비 상태를 마지막으로 한 번 더 확인한다
+            if (isGuidingTo(p.target)) markGuiding(seq) else failRoute("내비가 응답하지 않아요")
         }
     }
 
@@ -259,16 +264,18 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     /**
      * SDK 이벤트에는 요청 ID가 없다. 그래서
      * 1) 이번 요청을 보내기 전에 받은 이벤트는 버리고,
-     * 2) "안내 시작" 이벤트를 받으면 내비의 현재 상태를 직접 조회해서
-     *    지금 안내 중이고 목적지가 요청한 지점(100m 이내)일 때만 GUIDING으로 바꾼다.
+     * 2) "안내 시작" 또는 "안내 상태 바뀜" 이벤트를 받으면 내비의 현재 상태를 직접 조회해서
+     *    경로 안내 중(ROUTE_DRIVE)이고 목적지가 요청한 지점(100m 이내)일 때만 GUIDING으로 바꾼다.
      * 늦게 온 이전 요청의 콜백이 와도, 내비가 지금 우리 목적지로 안내 중이 아니면 확인되지 않는다.
+     * 반대로 실패로 표시된 뒤라도 내비가 실제로 우리 목적지를 안내하고 있으면 GUIDING으로 되돌린다.
      */
     private fun onNaviEvent(e: NaviEvent) {
         val p = _ui.value.phase as? RunPhase.DrivingTo ?: return
         if (e.at < requestSentAt) return
         when (e) {
-            is NaviEvent.RouteStarted -> if (p.route == RouteStatus.REQUESTING) verifyRoute(requestSeq, p.target)
-            is NaviEvent.Error -> if (p.route != RouteStatus.FAILED) {
+            is NaviEvent.RouteStarted -> if (p.route != RouteStatus.GUIDING) startVerify()
+            is NaviEvent.StatusChanged -> if (e.guiding && p.route != RouteStatus.GUIDING) startVerify()
+            is NaviEvent.Error -> if (p.route == RouteStatus.REQUESTING) {
                 routeTimeoutJob?.cancel()
                 failRoute(naviErrorText(e.message))
             }
@@ -278,24 +285,36 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         }
     }
 
-    private fun verifyRoute(seq: Int, target: NaviTarget) = viewModelScope.launch {
-        // 내비 상태가 이벤트보다 늦게 바뀔 수 있어 1초 간격으로 5번까지 확인한다
-        repeat(5) { attempt ->
-            if (attempt > 0) delay(1_000)
-            val active = routeGateway?.activeRoute()
-            if (seq != requestSeq) return@launch // 그사이 새 요청을 보냈다
-            val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
-            if (p.route != RouteStatus.REQUESTING) return@launch
-            // 내비가 "경로 안내 중"(ROUTE_DRIVE)으로 확인되고, 현재 목적지가 요청한 지점일 때만
-            val ok = active != null && active.guiding == true &&
-                active.destination?.let { Geo.distanceM(it, target.point) <= ROUTE_MATCH_M } == true
-            if (ok) {
-                routeTimeoutJob?.cancel()
-                _ui.update { it.copy(phase = p.copy(route = RouteStatus.GUIDING, failReason = null)) }
-                return@launch
+    /** 확인 작업이 이미 돌고 있으면 새로 시작하지 않는다 */
+    private fun startVerify() {
+        if (verifyJob?.isActive == true) return
+        val seq = requestSeq
+        verifyJob = viewModelScope.launch {
+            // 내비 상태가 이벤트보다 늦게 바뀔 수 있어, 확인될 때까지 1초 간격으로 조회한다 (최대 30초)
+            repeat(30) { attempt ->
+                if (attempt > 0) delay(1_000)
+                val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
+                if (seq != requestSeq || p.route == RouteStatus.GUIDING) return@launch
+                if (isGuidingTo(p.target)) { markGuiding(seq); return@launch }
             }
         }
-        // 끝내 맞지 않으면 그대로 둔다. 우리 요청의 시작 이벤트가 다시 오거나 시간 초과로 실패 처리된다.
+    }
+
+    /** 내비가 지금 "경로 안내 중"이고 현재 목적지가 target 지점(100m 이내)인지 */
+    private suspend fun isGuidingTo(target: NaviTarget): Boolean {
+        val active = routeGateway?.activeRoute() ?: return false
+        return active.guiding == true &&
+            active.destination?.let { Geo.distanceM(it, target.point) <= ROUTE_MATCH_M } == true
+    }
+
+    /** 같은 요청(seq)이 아직 진행 중일 때만 안내 중으로 바꾼다 (실패 표시였어도 되돌림) */
+    private fun markGuiding(seq: Int) {
+        if (seq != requestSeq) return
+        routeTimeoutJob?.cancel()
+        _ui.update { s ->
+            val p = s.phase as? RunPhase.DrivingTo ?: return@update s
+            s.copy(phase = p.copy(route = RouteStatus.GUIDING, failReason = null))
+        }
     }
 
     /** 내비가 알려 준 목적지 이름이 우리가 요청한 이름과 같은지 (공백·대소문자 무시) */
