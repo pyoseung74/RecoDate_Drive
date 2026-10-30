@@ -76,8 +76,14 @@ class PleosNaviGateway(context: Context) : NaviGateway {
         override fun onDestinationInfo(info: DestinationInfo) { pendingDestination?.complete(info) }
         override fun onRecentDestinationInfo(list: List<RecentDestinationInfo>) { pendingRecent?.complete(list) }
         override fun onBookmarkInfo(list: List<BookmarkInfo>) { pendingBookmark?.complete(list) }
-        override fun onRouteStarted(info: RouteStartInfo) { _events.tryEmit(NaviEvent.RouteStarted("")) }
-        override fun onDestinationArrived(info: DestinationArrivedInfo) { _events.tryEmit(NaviEvent.Arrived(info.name)) }
+        override fun onRouteStarted(info: RouteStartInfo) {
+            Log.d(TAG, "onRouteStarted name='${info.name}'")
+            _events.tryEmit(NaviEvent.RouteStarted(info.name))
+        }
+        override fun onDestinationArrived(info: DestinationArrivedInfo) {
+            Log.d(TAG, "onDestinationArrived name='${info.name}'")
+            _events.tryEmit(NaviEvent.Arrived(info.name))
+        }
         override fun onWayPointArrived(info: ai.pleos.playground.navi.data.WaypointArrivedInfo) {
             _events.tryEmit(NaviEvent.WaypointArrived(""))
         }

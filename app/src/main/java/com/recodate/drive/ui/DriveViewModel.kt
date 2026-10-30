@@ -247,7 +247,8 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     private fun onNaviEvent(e: NaviEvent) {
         val p = _ui.value.phase as? RunPhase.DrivingTo ?: return
         when (e) {
-            is NaviEvent.RouteStarted -> if (p.route == RouteStatus.REQUESTING) {
+            // 늦게 도착한 이전 요청의 콜백이 새 경로를 확인하지 않도록, 목적지 이름이 같을 때만 받는다
+            is NaviEvent.RouteStarted -> if (p.route == RouteStatus.REQUESTING && sameDestination(e.target, p.target.name)) {
                 routeTimeoutJob?.cancel()
                 _ui.update { it.copy(phase = p.copy(route = RouteStatus.GUIDING, failReason = null)) }
             }
@@ -256,9 +257,15 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
                 failRoute(naviErrorText(e.message))
             }
             // 우리가 요청한 안내가 시작된 뒤의 도착만 처리한다
-            is NaviEvent.Arrived -> if (p.route == RouteStatus.GUIDING) markArrived()
+            is NaviEvent.Arrived -> if (p.route == RouteStatus.GUIDING && sameDestination(e.name, p.target.name)) markArrived()
             is NaviEvent.WaypointArrived -> Unit
         }
+    }
+
+    /** 내비가 알려 준 목적지 이름이 우리가 요청한 이름과 같은지 (공백·대소문자 무시) */
+    private fun sameDestination(reported: String, requested: String): Boolean {
+        fun norm(s: String) = s.filterNot { it.isWhitespace() }.lowercase()
+        return reported.isNotBlank() && norm(reported) == norm(requested)
     }
 
     private fun naviErrorText(code: String) = when (code) {
