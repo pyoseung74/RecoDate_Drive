@@ -13,6 +13,7 @@ import ai.pleos.playground.navi.data.RecentDestinationInfo
 import ai.pleos.playground.navi.data.RequestWaypointInfo
 import ai.pleos.playground.navi.data.RouteInfo
 import ai.pleos.playground.navi.data.RouteStartInfo
+import ai.pleos.playground.navi.constants.NavigationStatus
 import ai.pleos.playground.navi.data.RouteWithWaypointsRequest
 import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
@@ -27,12 +28,23 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 
+/** 이벤트를 받은 시각(System.nanoTime). 요청보다 먼저 받은 이벤트를 걸러 내는 데 쓴다 */
+private fun now() = System.nanoTime()
+
 sealed interface NaviEvent {
-    data class RouteStarted(val target: String) : NaviEvent
-    data class Arrived(val name: String) : NaviEvent
-    data class WaypointArrived(val name: String) : NaviEvent
-    data class Error(val message: String) : NaviEvent
+    val at: Long
+    data class RouteStarted(val target: String, override val at: Long = now()) : NaviEvent
+    data class Arrived(val name: String, override val at: Long = now()) : NaviEvent
+    data class WaypointArrived(val name: String, override val at: Long = now()) : NaviEvent
+    data class Error(val message: String, override val at: Long = now()) : NaviEvent
 }
+
+/**
+ * 내비가 지금 안내 중인 경로.
+ * guiding: 경로 안내 상태(NavigationStatus.ROUTE_DRIVE)인지. 상태 이벤트를 아직 못 받았으면 null.
+ * (RouteStateInfo.isRouting은 "경로 계산 중"이라 안내 중에도 false라서 쓰지 않는다)
+ */
+data class ActiveRoute(val guiding: Boolean?, val destinationName: String, val destination: GeoPoint?)
 
 interface NaviGateway {
     /** NaviHelper 초기화에 성공했는지 */
@@ -45,6 +57,11 @@ interface NaviGateway {
     suspend fun currentDestination(): Anchor?
     /** 최근 목적지 + 즐겨찾기 (중복 제거) */
     suspend fun recentDestinations(): List<Anchor>
+    /**
+     * 내비가 지금 실제로 안내 중인 경로. 확인할 수 없으면 null.
+     * SDK 이벤트에는 요청 ID가 없어서, 안내 시작은 이 상태를 직접 조회해 확인한다.
+     */
+    suspend fun activeRoute(): ActiveRoute?
     /**
      * 목적지 하나로 경로 요청. 요청을 보내지 못하면 false.
      * true여도 안내가 시작된 것은 아니다. RouteStarted 또는 Error 이벤트로 결과를 확인한다.
@@ -70,12 +87,17 @@ class PleosNaviGateway(context: Context) : NaviGateway {
     private var pendingDestination: CompletableDeferred<DestinationInfo?>? = null
     private var pendingRecent: CompletableDeferred<List<RecentDestinationInfo>>? = null
     private var pendingBookmark: CompletableDeferred<List<BookmarkInfo>>? = null
+    @Volatile private var navigationStatus: NavigationStatus? = null
 
     private val listener = object : NaviHelperEventListener {
         override fun onCurrentLocationInfo(info: CurrentLocationInfo) { pendingLocation?.complete(info) }
         override fun onDestinationInfo(info: DestinationInfo) { pendingDestination?.complete(info) }
         override fun onRecentDestinationInfo(list: List<RecentDestinationInfo>) { pendingRecent?.complete(list) }
         override fun onBookmarkInfo(list: List<BookmarkInfo>) { pendingBookmark?.complete(list) }
+        override fun onNavigationStatus(status: NavigationStatus) {
+            Log.d(TAG, "onNavigationStatus $status")
+            navigationStatus = status
+        }
         override fun onRouteStarted(info: RouteStartInfo) {
             Log.d(TAG, "onRouteStarted name='${info.name}'")
             _events.tryEmit(NaviEvent.RouteStarted(info.name))
@@ -138,6 +160,17 @@ class PleosNaviGateway(context: Context) : NaviGateway {
             .distinctBy { it.name }.take(6)
     }
 
+    override suspend fun activeRoute(): ActiveRoute? {
+        if (!_connected.value) return null
+        val d = CompletableDeferred<DestinationInfo?>().also { pendingDestination = it }
+        runCatching { helper.getDestinationInfo() }.onFailure { return null }
+        val dest = withTimeoutOrNull(2_500) { d.await() } ?: return null
+        val point = dest.takeIf { !(it.latitude == 0.0 && it.longitude == 0.0) }?.let { GeoPoint(it.latitude, it.longitude) }
+        val guiding = navigationStatus?.let { it == NavigationStatus.ROUTE_DRIVE }
+        Log.d(TAG, "activeRoute guiding=$guiding status=$navigationStatus dest='${dest.name}' $point")
+        return ActiveRoute(guiding, dest.name, point)
+    }
+
     override fun startRoute(target: NaviTarget): Boolean {
         if (!_connected.value) return false
         return runCatching { helper.requestRoute(target.toRouteInfo()) }
@@ -192,6 +225,7 @@ class DemoNaviGateway : NaviGateway {
     override suspend fun currentLocation() = DemoData.demoCarLocation
     override suspend fun currentDestination(): Anchor? = null
     override suspend fun recentDestinations() = DemoData.recentAnchors
+    override suspend fun activeRoute() = lastTarget?.let { ActiveRoute(true, it.name, it.point) }
 
     override fun startRoute(target: NaviTarget): Boolean {
         lastTarget = target

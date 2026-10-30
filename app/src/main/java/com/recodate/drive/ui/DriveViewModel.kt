@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.recodate.drive.AppContainer
 import com.recodate.drive.data.MY_AREA
+import com.recodate.drive.engine.Geo
 import com.recodate.drive.data.Recommendation
 import com.recodate.drive.model.Anchor
 import com.recodate.drive.model.Course
@@ -70,7 +71,11 @@ data class UiState(
 
 class DriveViewModel(private val c: AppContainer) : ViewModel() {
 
-    companion object { const val ROUTE_TIMEOUT_MS = 25_000L }
+    companion object {
+        const val ROUTE_TIMEOUT_MS = 25_000L
+        /** 내비 목적지와 요청 지점이 이 거리 안이면 같은 목적지로 본다 (내비가 입구 좌표로 보정할 수 있음) */
+        const val ROUTE_MATCH_M = 100.0
+    }
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui
@@ -90,6 +95,10 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     private val navi: NaviGateway get() = if (c.navi.connected.value) c.navi else c.demoNavi
     private var recommendJob: Job? = null
     private var routeTimeoutJob: Job? = null
+    /** 경로 요청 번호와 보낸 시각. 이전 요청에 대한 콜백·확인 결과를 걸러 낸다 */
+    private var requestSeq = 0
+    private var requestSentAt = 0L
+    private var routeGateway: NaviGateway? = null
     private var lastDrive: DriveState = DriveState.UNKNOWN
 
     init {
@@ -188,6 +197,9 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             else -> null
         }
         _ui.update { it.copy(phase = RunPhase.DrivingTo(stopIndex, target, RouteStatus.REQUESTING)) }
+        requestSeq++
+        requestSentAt = System.nanoTime()
+        routeGateway = gateway
         val sent = gateway?.startRoute(target) ?: false
         if (!sent) {
             failRoute(if (gateway == null) "차량 내비에 연결되지 않았어요" else "내비에 경로 요청을 보내지 못했어요")
@@ -244,14 +256,18 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     fun backToResults() = _ui.update { it.copy(screen = Screen.RESULTS) }
     fun consumeToast() = _ui.update { it.copy(toast = null) }
 
+    /**
+     * SDK 이벤트에는 요청 ID가 없다. 그래서
+     * 1) 이번 요청을 보내기 전에 받은 이벤트는 버리고,
+     * 2) "안내 시작" 이벤트를 받으면 내비의 현재 상태를 직접 조회해서
+     *    지금 안내 중이고 목적지가 요청한 지점(100m 이내)일 때만 GUIDING으로 바꾼다.
+     * 늦게 온 이전 요청의 콜백이 와도, 내비가 지금 우리 목적지로 안내 중이 아니면 확인되지 않는다.
+     */
     private fun onNaviEvent(e: NaviEvent) {
         val p = _ui.value.phase as? RunPhase.DrivingTo ?: return
+        if (e.at < requestSentAt) return
         when (e) {
-            // 늦게 도착한 이전 요청의 콜백이 새 경로를 확인하지 않도록, 목적지 이름이 같을 때만 받는다
-            is NaviEvent.RouteStarted -> if (p.route == RouteStatus.REQUESTING && sameDestination(e.target, p.target.name)) {
-                routeTimeoutJob?.cancel()
-                _ui.update { it.copy(phase = p.copy(route = RouteStatus.GUIDING, failReason = null)) }
-            }
+            is NaviEvent.RouteStarted -> if (p.route == RouteStatus.REQUESTING) verifyRoute(requestSeq, p.target)
             is NaviEvent.Error -> if (p.route != RouteStatus.FAILED) {
                 routeTimeoutJob?.cancel()
                 failRoute(naviErrorText(e.message))
@@ -260,6 +276,26 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             is NaviEvent.Arrived -> if (p.route == RouteStatus.GUIDING && sameDestination(e.name, p.target.name)) markArrived()
             is NaviEvent.WaypointArrived -> Unit
         }
+    }
+
+    private fun verifyRoute(seq: Int, target: NaviTarget) = viewModelScope.launch {
+        // 내비 상태가 이벤트보다 늦게 바뀔 수 있어 1초 간격으로 3번까지 확인한다
+        repeat(3) { attempt ->
+            if (attempt > 0) delay(1_000)
+            val active = routeGateway?.activeRoute()
+            if (seq != requestSeq) return@launch // 그사이 새 요청을 보냈다
+            val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
+            if (p.route != RouteStatus.REQUESTING) return@launch
+            // 내비의 현재 목적지가 요청한 지점이고, 안내 상태가 "경로 안내 중"이 아니라고 확인되지 않았을 때
+            val ok = active != null && active.guiding != false &&
+                active.destination?.let { Geo.distanceM(it, target.point) <= ROUTE_MATCH_M } == true
+            if (ok) {
+                routeTimeoutJob?.cancel()
+                _ui.update { it.copy(phase = p.copy(route = RouteStatus.GUIDING, failReason = null)) }
+                return@launch
+            }
+        }
+        // 끝내 맞지 않으면 그대로 둔다. 우리 요청의 시작 이벤트가 다시 오거나 시간 초과로 실패 처리된다.
     }
 
     /** 내비가 알려 준 목적지 이름이 우리가 요청한 이름과 같은지 (공백·대소문자 무시) */
