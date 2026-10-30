@@ -27,8 +27,9 @@ import kotlin.math.roundToInt
  *
  * 점수는 모두 0~1로 맞춘 뒤 가중합한다.
  * - 장소 점수   = 0.5 관심사 일치 + 0.3 날씨 적합 + 0.2 인기도(모르면 0.5)
- * - 주차장 점수 = 0.5 (1 − 혼잡도, 모르면 0.5) + 0.3 가까움 + 0.2 요금(모르면 0.5)
- * - 코스 점수   = 0.4 장소 평균 + 0.3 주차장 + 0.3 시간 적합 − 0.1 도보 부담
+ * - 주차장 점수 = 0.6 (1 − 혼잡도, 모르면 0.5) + 0.25 가까움 + 0.15 요금(모르면 0.5)
+ * - 코스 점수   = 0.35 장소 평균 + 0.35 주차장 + 0.3 시간 적합 − 0.1 도보 부담 − 혼잡 감점
+ *   (혼잡 감점: "혼잡" 주차장 0.1, "매우 혼잡" 0.25. 주차가 이 앱의 핵심이라 확실히 반영한다)
  * 같은 점수면 총 이동이 짧은 코스, 그다음 코스 id 순.
  */
 class CourseRecommender(
@@ -102,7 +103,14 @@ class CourseRecommender(
         val occ = st.occupancy?.let { 1 - it } ?: 0.5
         val near = 1 - min(1.0, walkM.toDouble() / maxWalkM)
         val fee = lot.feePer30Min?.let { 1 - min(it, 3000) / 3000.0 } ?: 0.5
-        return 0.5 * occ + 0.3 * near + 0.2 * fee
+        return 0.6 * occ + 0.25 * near + 0.15 * fee
+    }
+
+    /** 혼잡한 주차장을 쓰는 코스 감점 */
+    private fun congestionPenalty(st: ParkingStatus?): Double = when (st?.level) {
+        CongestionLevel.BUSY -> 0.1
+        CongestionLevel.FULL -> 0.25
+        else -> 0.0
     }
 
     /** 시간대별 코스 틀. 각 칸은 들어갈 수 있는 종류의 집합 */
@@ -183,6 +191,8 @@ class CourseRecommender(
             stops = stops - drop
             order = bestLoop(lot.point, stops)
         }
+        // 최소 장소 수까지 줄여도 총 도보가 상한을 넘으면 이 주차장으로는 코스를 만들지 않는다
+        if (order.second > PW_MAX_TOTAL_WALK_M) return null
         val ordered = order.first
         val totalWalk = order.second
 
@@ -204,7 +214,8 @@ class CourseRecommender(
 
         val avgPlace = ordered.map { placeScore(ctx, it) }.average()
         val timeFit = 1 - min(1.0, (driveToStart ?: 20) / 60.0)
-        val score = 0.4 * avgPlace + 0.3 * lotScore + 0.3 * timeFit - 0.1 * totalWalk / PW_MAX_TOTAL_WALK_M
+        val score = 0.35 * avgPlace + 0.35 * lotScore + 0.3 * timeFit -
+            0.1 * totalWalk / PW_MAX_TOTAL_WALK_M - congestionPenalty(status)
 
         return Course(
             id = "pw-${lot.id}-${ordered.joinToString("-") { it.id }}",
@@ -327,7 +338,8 @@ class CourseRecommender(
         val avgPlace = ordered.map { placeScore(ctx, it.place) }.average()
         val avgLot = ordered.map { it.lotScore }.average()
         val timeFit = 1 - min(1.0, totalDrive / 90.0)
-        val score = 0.4 * avgPlace + 0.3 * avgLot + 0.3 * timeFit - 0.1 * totalWalk / PW_MAX_TOTAL_WALK_M
+        val score = 0.35 * avgPlace + 0.35 * avgLot + 0.3 * timeFit -
+            0.1 * totalWalk / PW_MAX_TOTAL_WALK_M - stops.map { congestionPenalty(it.parkingStatus) }.average()
         val busy = stops.count { it.parkingStatus?.level == CongestionLevel.BUSY || it.parkingStatus?.level == CongestionLevel.FULL }
 
         return Course(

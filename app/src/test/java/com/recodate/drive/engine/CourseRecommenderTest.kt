@@ -115,6 +115,21 @@ class CourseRecommenderTest {
     }
 
     @Test
+    fun predictor_spreadsDemandAcrossLots() {
+        // 장소 10곳이 lotA 바로 옆에 몰려 있고, lotB는 조금 떨어져 있다
+        val center = GeoPoint(37.7720, 128.9475)
+        val lotA = com.recodate.drive.model.ParkingLot("A", "A", center)
+        val lotB = com.recodate.drive.model.ParkingLot("B", "B", GeoPoint(37.7745, 128.9475)) // 약 280m 북쪽
+        val places = (0 until 10).map {
+            com.recodate.drive.model.Place("p$it", "p$it", com.recodate.drive.model.PlaceCategory.CAFE,
+                GeoPoint(37.7720 + it * 0.00002, 128.9475))
+        }
+        val st = ParkingPredictor.predictAll(listOf(lotA, lotB), places, 18 * 60, false)
+        assertTrue(st.getValue("A").occupancy!! > st.getValue("B").occupancy!!)
+        assertNotEquals(st.getValue("A").level, st.getValue("B").level)
+    }
+
+    @Test
     fun kmaGrid_matchesKnownPoints() {
         // 기상청 예시: 서울시청 (60, 127)
         assertEquals(60 to 127, com.recodate.drive.data.KmaWeatherSource.toGrid(37.5665, 126.9780))

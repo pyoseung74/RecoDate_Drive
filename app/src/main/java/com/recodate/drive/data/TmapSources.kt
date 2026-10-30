@@ -110,6 +110,11 @@ private fun JsonObject.point(): GeoPoint? {
     return if (lat != null && lon != null) GeoPoint(lat, lon) else null
 }
 
+private fun isParkingPoi(poi: JsonObject): Boolean {
+    val biz = poi.str("middleBizName") + " " + poi.str("lowerBizName") + " " + poi.str("detailBizName")
+    return isParkingName(poi.str("name")) || "주차" in biz
+}
+
 private fun JsonObject.address(): String =
     listOf(str("upperAddrName"), str("middleAddrName"), str("lowerAddrName"), str("roadName"))
         .filter { it.isNotBlank() }.joinToString(" ")
@@ -124,6 +129,8 @@ class TmapPlaceSource(private val appKey: String, private val quota: TmapQuota) 
                             .onFailure { android.util.Log.w("Tmap", "POI '$q' failed: $it") }
                             .getOrDefault(emptyList())
                             .mapNotNull { poi ->
+                                // 장소 검색 결과에 섞여 오는 주차장은 뺀다 (주차장은 따로 검색한다)
+                                if (isParkingPoi(poi)) return@mapNotNull null
                                 val pt = poi.point() ?: return@mapNotNull null
                                 Place(
                                     id = "tm-" + poi.str("id"),
