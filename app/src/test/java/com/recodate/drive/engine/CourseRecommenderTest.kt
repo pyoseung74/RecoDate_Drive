@@ -130,6 +130,28 @@ class CourseRecommenderTest {
     }
 
     @Test
+    fun walkLimit_keepsAValidSmallerCourse_insteadOfDroppingTheLot() {
+        // 주차장 기준 A는 동쪽 500m, B는 서쪽 500m(둘 다 점수 높음), C는 동쪽 100m(점수 낮음).
+        // A+B+C, A+B는 2km를 넘지만 A+C, B+C는 2km 안에 든다.
+        // 예전 방식(점수 낮은 C부터 빼기)은 A+B만 남아 주차장을 버렸다.
+        val lot = GeoPoint(37.7700, 128.9400)
+        fun east(m: Double) = GeoPoint(37.7700, 128.9400 + m / 88_000.0)
+        val a = com.recodate.drive.model.Place("A", "A", com.recodate.drive.model.PlaceCategory.FOOD, east(500.0))
+        val b = com.recodate.drive.model.Place("B", "B", com.recodate.drive.model.PlaceCategory.CAFE, east(-500.0))
+        val c = com.recodate.drive.model.Place("C", "C", com.recodate.drive.model.PlaceCategory.WALK, east(100.0))
+        val score = mapOf("A" to 0.9, "B" to 0.8, "C" to 0.2)
+
+        val fit = recommender().fitWithinWalk(lot, listOf(a, b, c), anchorId = null) { score.getValue(it.id) }
+        assertTrue(fit != null)
+        assertTrue(fit!!.second <= CourseRecommender.PW_MAX_TOTAL_WALK_M)
+        assertEquals(setOf("A", "C"), fit.first.map { it.id }.toSet()) // 2곳 중 점수 합이 가장 높은 조합
+
+        // 꼭 들를 곳이 B면 B는 반드시 포함
+        val withAnchor = recommender().fitWithinWalk(lot, listOf(a, b, c), anchorId = "B") { score.getValue(it.id) }
+        assertEquals(setOf("B", "C"), withAnchor!!.first.map { it.id }.toSet())
+    }
+
+    @Test
     fun kmaGrid_matchesKnownPoints() {
         // 기상청 예시: 서울시청 (60, 127)
         assertEquals(60 to 127, com.recodate.drive.data.KmaWeatherSource.toGrid(37.5665, 126.9780))

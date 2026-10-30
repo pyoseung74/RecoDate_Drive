@@ -183,16 +183,8 @@ class CourseRecommender(
         }
         if (chosen.size < MIN_STOPS) return null
 
-        // 주차장에서 출발해 돌아오는 가장 짧은 순서. 총 도보가 넘치면 점수 낮은 장소부터 뺀다.
-        var stops = chosen.toList()
-        var order = bestLoop(lot.point, stops)
-        while (order.second > PW_MAX_TOTAL_WALK_M && stops.size > MIN_STOPS) {
-            val drop = stops.filter { it.id != anchorPlace?.id }.minByOrNull { placeScore(ctx, it) } ?: break
-            stops = stops - drop
-            order = bestLoop(lot.point, stops)
-        }
-        // 최소 장소 수까지 줄여도 총 도보가 상한을 넘으면 이 주차장으로는 코스를 만들지 않는다
-        if (order.second > PW_MAX_TOTAL_WALK_M) return null
+        // 주차장에서 출발해 돌아오는 가장 짧은 순서. 총 도보가 넘치면 상한 안에 드는 가장 좋은 조합을 고른다.
+        val order = fitWithinWalk(lot.point, chosen, anchorPlace?.id) { placeScore(ctx, it) } ?: return null
         val ordered = order.first
         val totalWalk = order.second
 
@@ -237,6 +229,38 @@ class CourseRecommender(
                 if (status.level == CongestionLevel.FULL) "주차장이 매우 혼잡할 수 있어요" else null,
             ),
         )
+    }
+
+    /**
+     * 주차장에서 출발해 돌아오는 순환 도보가 상한(2km) 안에 드는 가장 좋은 장소 조합과 순서.
+     * 장소가 많아야 5곳이라 모든 부분집합을 따진다 (점수 낮은 것부터 빼는 방식은
+     * 가까운 장소를 먼저 버려서, 상한 안에 드는 다른 조합이 있어도 놓칠 수 있다).
+     * 고르는 기준: 장소 수 많은 것 → 점수 합 높은 것 → 도보 짧은 것. 꼭 들를 곳(anchorId)은 항상 포함.
+     * 최소 장소 수(2곳)로도 안 되면 null.
+     */
+    internal fun fitWithinWalk(
+        start: GeoPoint,
+        chosen: List<Place>,
+        anchorId: String?,
+        scoreOf: (Place) -> Double,
+    ): Pair<List<Place>, Int>? {
+        val full = bestLoop(start, chosen)
+        if (full.second <= PW_MAX_TOTAL_WALK_M) return full
+        val n = chosen.size
+        var best: Pair<List<Place>, Int>? = null
+        var bestKey: Triple<Int, Double, Int>? = null
+        for (mask in 1 until (1 shl n)) {
+            val subset = chosen.filterIndexed { i, _ -> mask and (1 shl i) != 0 }
+            if (subset.size < MIN_STOPS) continue
+            if (anchorId != null && subset.none { it.id == anchorId }) continue
+            val loop = bestLoop(start, subset)
+            if (loop.second > PW_MAX_TOTAL_WALK_M) continue
+            val key = Triple(subset.size, subset.sumOf(scoreOf), -loop.second)
+            if (bestKey == null || compareValuesBy(key, bestKey, { it.first }, { it.second }, { it.third }) > 0) {
+                best = loop; bestKey = key
+            }
+        }
+        return best
     }
 
     /** start에서 출발해 모든 장소를 돌고 start로 돌아오는 가장 짧은 순서 (장소 ≤ 5, 완전 탐색) */
