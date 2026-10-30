@@ -175,10 +175,20 @@ data class Course(
 
 data class NaviTarget(val name: String, val point: GeoPoint, val isParking: Boolean)
 
-/** 방문객이 쓸 수 없는 주차장 (거주자 우선·주민 전용·아파트·관계자 전용·특정 동 전용 등) */
+/**
+ * 방문객이 쓸 수 없는 주차장.
+ * - 이름에 "전용"이 들어가면 모두 제외 (투숙객·고객·직원·장애인·경차·전기차·"타워D" 전용 등)
+ * - 거주·관계자용: 거주자 우선, 주민 우선, 입주자·입주민, 아파트·빌라·오피스텔·맨션·기숙사·사택,
+ *   관계자·직원·교직원·임직원·사원, 등록차량·정기권, 사유지
+ * "주민센터"·"행정복지센터"처럼 방문객이 쓰는 공공 주차장은 막지 않는다.
+ */
 fun isResidentOnlyParking(name: String): Boolean {
     val n = name.replace(" ", "")
-    return listOf("거주자", "주민전용", "아파트", "관계자", "직원전용", "입주자", "전용주차").any { it in n }
+    val words = listOf(
+        "전용", "거주자", "주민우선", "입주자", "입주민", "아파트", "빌라", "오피스텔", "맨션", "기숙사", "사택",
+        "관계자", "직원", "교직원", "임직원", "사원", "등록차량", "정기권", "사유지",
+    )
+    return words.any { it in n }
 }
 
 fun Int.toClock(): String {

@@ -45,9 +45,14 @@ class CourseServiceTest {
 
     @Test
     fun residentOnlyParking_isDetected() {
-        assertTrue(com.recodate.drive.model.isResidentOnlyParking("대명아파트이면도로거주자우선주차장"))
-        assertTrue(com.recodate.drive.model.isResidentOnlyParking("쏠비치 삼척 타워D전용주차장"))
-        assertTrue(!com.recodate.drive.model.isResidentOnlyParking("견소동공영주차장"))
+        val blocked = listOf(
+            "대명아파트이면도로거주자우선주차장", "쏠비치 삼척 타워D전용주차장", "호텔 투숙객 전용 주차구역",
+            "OO마트 고객전용", "입주민 주차장", "해오름빌라 주차장", "OO오피스텔 지하주차장",
+            "교직원 주차장", "임직원주차장", "등록차량 외 주차금지", "전기차 전용 충전주차",
+        )
+        val allowed = listOf("견소동공영주차장", "안목해변 주차장", "OO동 행정복지센터 주차장", "주민센터 주차장", "쏠비치 삼척 리조트주차장")
+        blocked.forEach { assertTrue("막아야 함: $it", com.recodate.drive.model.isResidentOnlyParking(it)) }
+        allowed.forEach { assertTrue("허용해야 함: $it", !com.recodate.drive.model.isResidentOnlyParking(it)) }
     }
 
     @Test

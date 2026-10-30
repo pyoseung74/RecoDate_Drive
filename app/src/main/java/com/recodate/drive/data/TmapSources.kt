@@ -176,6 +176,8 @@ class TmapParkingSource(private val appKey: String, private val quota: TmapQuota
         tmapAround(appKey, quota, center, radiusM, "주차장", 50).mapNotNull { poi ->
             val pt = poi.point() ?: return@mapNotNull null
             val name = poi.str("name")
+            // 방문객이 쓸 수 없는 주차장은 여기서부터 뺀다 (엔진에서도 한 번 더 거른다)
+            if (com.recodate.drive.model.isResidentOnlyParking(name)) return@mapNotNull null
             ParkingLot(
                 id = "tm-" + poi.str("id"),
                 name = name,
