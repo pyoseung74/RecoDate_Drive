@@ -14,6 +14,9 @@ import com.recodate.drive.data.NoRealtimeParking
 import com.recodate.drive.data.NoTraffic
 import com.recodate.drive.data.TmapParkingSource
 import com.recodate.drive.data.TmapPlaceSource
+import com.recodate.drive.data.PrefsQuotaStore
+import com.recodate.drive.data.TmapApi
+import com.recodate.drive.data.TmapQuota
 import com.recodate.drive.data.TmapTrafficSource
 import com.recodate.drive.data.WeatherSource
 import com.recodate.drive.model.GeoPoint
@@ -52,11 +55,20 @@ class AppContainer(context: Context) {
     private val liveWeather: WeatherSource? = if (hasDataKey) KmaWeatherSource(BuildConfig.DATA_GO_KR_KEY) else null
     private val demoWeather = DemoWeatherSource { demo.rain.value }
 
+    /** TMAP 호출 한도 가드 (앱을 다시 켜도 유지). 모든 TMAP 호출은 이것을 거친다 */
+    val tmapQuota = TmapQuota(
+        store = PrefsQuotaStore(context),
+        dailyOverride = buildMap {
+            if (BuildConfig.TMAP_DAILY_POI_LIMIT >= 0) put(TmapApi.POI, BuildConfig.TMAP_DAILY_POI_LIMIT)
+            if (BuildConfig.TMAP_DAILY_ROUTE_LIMIT >= 0) put(TmapApi.ROUTE, BuildConfig.TMAP_DAILY_ROUTE_LIMIT)
+        },
+    )
+
     val courseService = CourseService(
-        places = if (hasTmapKey) FallbackPlaceSource(TmapPlaceSource(BuildConfig.TMAP_APP_KEY), DemoPlaceSource()) else DemoPlaceSource(),
-        parking = if (hasTmapKey) FallbackParkingSource(TmapParkingSource(BuildConfig.TMAP_APP_KEY), DemoParkingSource()) else DemoParkingSource(),
+        places = if (hasTmapKey) FallbackPlaceSource(TmapPlaceSource(BuildConfig.TMAP_APP_KEY, tmapQuota), DemoPlaceSource()) else DemoPlaceSource(),
+        parking = if (hasTmapKey) FallbackParkingSource(TmapParkingSource(BuildConfig.TMAP_APP_KEY, tmapQuota), DemoParkingSource()) else DemoParkingSource(),
         realtime = NoRealtimeParking(),
-        traffic = if (hasTmapKey) TmapTrafficSource(BuildConfig.TMAP_APP_KEY) else NoTraffic(),
+        traffic = if (hasTmapKey) TmapTrafficSource(BuildConfig.TMAP_APP_KEY, tmapQuota) else NoTraffic(),
         weather = object : WeatherSource {
             // "비 오는 날" 시연을 켜면 실제 예보 대신 데모 날씨를 쓴다
             override suspend fun forecast(at: GeoPoint, minuteOfDay: Int) =

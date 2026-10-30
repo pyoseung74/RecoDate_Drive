@@ -6,6 +6,7 @@ import com.recodate.drive.model.Weather
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -52,12 +53,13 @@ class KmaWeatherSource(private val serviceKey: String) : WeatherSource {
             temperatureC = at0["TMP"]?.toDoubleOrNull(),
             source = DataSource.LIVE,
         )
-    }.getOrNull()
+    }.onFailure { android.util.Log.w("Kma", "forecast failed: $it") }.getOrNull()
 
     private suspend fun fetch(nx: Int, ny: Int, baseDate: String, baseTime: String): List<Fcst> {
-        // 공공데이터포털 "Decoding" 키를 넣었다고 보고 여기서 인코딩한다
+        // "Encoding" 키(%2F 등 포함)를 넣었으면 먼저 풀고, 한 번만 인코딩한다
+        val raw = if ('%' in serviceKey) URLDecoder.decode(serviceKey, "UTF-8") else serviceKey
         val url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst" +
-            "?serviceKey=${URLEncoder.encode(serviceKey, "UTF-8")}" +
+            "?serviceKey=${URLEncoder.encode(raw, "UTF-8")}" +
             "&pageNo=1&numOfRows=600&dataType=JSON&base_date=$baseDate&base_time=$baseTime&nx=$nx&ny=$ny"
         val root = Http.getJson(url)
         val fmt = DateTimeFormatter.ofPattern("yyyyMMddHHmm")

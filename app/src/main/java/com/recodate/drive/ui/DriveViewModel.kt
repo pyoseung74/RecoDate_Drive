@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.recodate.drive.AppContainer
 import com.recodate.drive.data.MY_AREA
+import com.recodate.drive.data.TmapApi
 import com.recodate.drive.engine.Geo
 import com.recodate.drive.data.Recommendation
 import com.recodate.drive.model.Anchor
@@ -91,6 +92,12 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     val lowEnergyDemo: StateFlow<Boolean> = c.demo.lowEnergy
     val naviConnected: StateFlow<Boolean> = c.navi.connected
     val usingLiveKeys: Boolean get() = c.hasTmapKey || c.hasDataKey
+
+    /** 시연 패널에 보여 줄 TMAP 사용량 (키가 없으면 null) */
+    fun tmapUsage(): String? = if (c.hasTmapKey) c.tmapQuota.summary() else null
+
+    /** TMAP 한도에 걸려 일부를 예상값·데모로 대신했는지 */
+    fun tmapLimited(): Boolean = c.hasTmapKey && TmapApi.entries.any { c.tmapQuota.exhausted(it) }
 
     private val navi: NaviGateway get() = if (c.navi.connected.value) c.navi else c.demoNavi
     private var recommendJob: Job? = null

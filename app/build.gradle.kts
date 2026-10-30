@@ -12,7 +12,9 @@ val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
-fun key(name: String): String = (localProps.getProperty(name) ?: "").trim()
+// 값 양쪽의 따옴표("...")는 빼고 읽는다
+fun key(name: String): String = (localProps.getProperty(name) ?: "").trim().removeSurrounding("\"").trim()
+fun intKey(name: String): Int = key(name).toIntOrNull() ?: -1
 
 android {
     namespace = "com.recodate.drive"
@@ -27,6 +29,9 @@ android {
 
         buildConfigField("String", "TMAP_APP_KEY", "\"${key("TMAP_APP_KEY")}\"")
         buildConfigField("String", "DATA_GO_KR_KEY", "\"${key("DATA_GO_KR_KEY")}\"")
+        // TMAP 하루 상한을 더 낮추고 싶을 때만 사용 (-1 = 기본값). 공개 무료 수치의 80%보다 높게는 못 올린다.
+        buildConfigField("int", "TMAP_DAILY_POI_LIMIT", "${intKey("TMAP_DAILY_POI_LIMIT")}")
+        buildConfigField("int", "TMAP_DAILY_ROUTE_LIMIT", "${intKey("TMAP_DAILY_ROUTE_LIMIT")}")
     }
 
     buildTypes {

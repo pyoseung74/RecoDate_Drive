@@ -223,7 +223,11 @@ private fun ResultsScreen(vm: DriveViewModel, ui: UiState, v: VehicleState) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.WbCloudy, null, tint = C.sub, modifier = Modifier.size(28.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(weatherText + if (rec.usedDemoData) "   ·   데모 데이터" else "", color = C.sub, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        weatherText + (if (rec.usedDemoData) "   ·   데모 데이터" else "") +
+                            (if (vm.tmapLimited()) "   ·   TMAP 오늘 한도 도달 → 예상값 사용" else ""),
+                        color = C.sub, style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
             }
             if (!v.restricted) IconButtonBig(Icons.Filled.Refresh, "다른 코스") { vm.recommend(refresh = true) }
@@ -443,6 +447,11 @@ private fun DemoPanel(vm: DriveViewModel, v: VehicleState, onClose: () -> Unit) 
             Spacer(Modifier.height(12.dp))
             Text(if (vm.usingLiveKeys) "외부 API 키 사용 중" else "API 키 없음 → 데모 데이터", color = C.sub,
                 style = MaterialTheme.typography.bodyMedium)
+            vm.tmapUsage()?.let {
+                Spacer(Modifier.height(8.dp))
+                Text("TMAP 사용량(무료 한도 보호): $it", color = if (vm.tmapLimited()) C.busy else C.sub,
+                    style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }
