@@ -160,17 +160,26 @@ data class Course(
     /** 카드에 보여 줄 "왜 이 코스인지" 한 줄 이유들 */
     val reasons: List<String>,
     val warnings: List<String>,
+    /** 조건에 맞는 코스가 없어 도보 거리 제한을 늘려 만든 코스인지 */
+    val relaxedLimits: Boolean = false,
 ) {
     /** 내비에 처음 넣을 목적지 (주차장 우선) */
     val firstNaviTarget: NaviTarget
         get() {
             val lot = mainParking ?: stops.first().parking
-            return if (lot != null) NaviTarget(lot.name, lot.point, isParking = true)
+            // "no-lot": 주차장 정보가 없어 목적지 자체로 안내하는 경우
+            return if (lot != null) NaviTarget(lot.name, lot.point, isParking = lot.id != "no-lot")
             else NaviTarget(stops.first().place.name, stops.first().place.point, isParking = false)
         }
 }
 
 data class NaviTarget(val name: String, val point: GeoPoint, val isParking: Boolean)
+
+/** 방문객이 쓸 수 없는 주차장 (거주자 우선·주민 전용·아파트·관계자 전용·특정 동 전용 등) */
+fun isResidentOnlyParking(name: String): Boolean {
+    val n = name.replace(" ", "")
+    return listOf("거주자", "주민전용", "아파트", "관계자", "직원전용", "입주자", "전용주차").any { it in n }
+}
 
 fun Int.toClock(): String {
     val m = ((this % 1440) + 1440) % 1440

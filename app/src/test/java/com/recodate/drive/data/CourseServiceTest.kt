@@ -36,6 +36,21 @@ class CourseServiceTest {
     }
 
     @Test
+    fun partialNameMatch_isNotTheDestination() {
+        val pizza = Place("pz", "피자스탠드 스타필드하남", PlaceCategory.FOOD, GeoPoint(37.5448, 127.2259))
+        val a = service.withAnchorPlace(Anchor("스타필드 하남", GeoPoint(37.5448, 127.2259)), listOf(pizza))
+        assertEquals("anchor", a.place?.id)
+        assertEquals("강남역", normalizeName("강남역[수도권2호선]"))
+    }
+
+    @Test
+    fun residentOnlyParking_isDetected() {
+        assertTrue(com.recodate.drive.model.isResidentOnlyParking("대명아파트이면도로거주자우선주차장"))
+        assertTrue(com.recodate.drive.model.isResidentOnlyParking("쏠비치 삼척 타워D전용주차장"))
+        assertTrue(!com.recodate.drive.model.isResidentOnlyParking("견소동공영주차장"))
+    }
+
+    @Test
     fun parkingNames_areDetected() {
         assertTrue(isParkingName("환희컵박물관 주차장"))
         assertTrue(isParkingName("견소동공영주차장"))

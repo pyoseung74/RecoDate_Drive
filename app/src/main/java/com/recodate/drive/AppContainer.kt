@@ -75,6 +75,11 @@ class AppContainer(context: Context) {
                 if (demo.rain.value || liveWeather == null) demoWeather.forecast(at, minuteOfDay)
                 else liveWeather.forecast(at, minuteOfDay)
         },
+        // 디버그 빌드에서만 추천 입력 데이터를 files/snapshots에 저장 (API 호출 없는 반복 테스트용)
+        snapshotSink = if (BuildConfig.DEBUG) { snap ->
+            val dir = java.io.File(context.filesDir, "snapshots").apply { mkdirs() }
+            java.io.File(dir, "snap_${System.currentTimeMillis()}_${snap.mode.name}.json").writeText(snap.toJson())
+        } else null,
     )
 
     private fun <T> safely(block: () -> T): T? =

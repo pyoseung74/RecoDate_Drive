@@ -3,6 +3,7 @@ package com.recodate.drive.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.recodate.drive.AppContainer
+import com.recodate.drive.BuildConfig
 import com.recodate.drive.data.MY_AREA
 import com.recodate.drive.data.TmapApi
 import com.recodate.drive.engine.Geo
@@ -153,7 +154,34 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         it.copy(interests = if (i in it.interests) it.interests - i else it.interests + i)
     }
 
-    fun recommend(refresh: Boolean = false) {
+    /**
+     * 디버그 빌드 전용: adb로 목적지와 모드를 넣어 바로 추천한다 (테스트 녹화용, TMAP 경로 호출 안 함).
+     * named=true면 내비 목적지처럼 이름 있는 목적지, false면 "내 주변"처럼 중심점만.
+     */
+    fun debugRecommend(name: String, lat: Double, lon: Double, mode: CourseMode, named: Boolean) = viewModelScope.launch {
+        // 좌표 없이 이름만 주면 TMAP 장소 검색 1건으로 좌표를 찾는다 (한도 가드 적용)
+        val (realName, point) = if (lat == 0.0 && lon == 0.0 && c.hasTmapKey) {
+            com.recodate.drive.data.tmapSearchOne(BuildConfig.TMAP_APP_KEY, c.tmapQuota, name)
+                ?: run { _ui.update { it.copy(error = "테스트 목적지를 찾지 못했어요: $name") }; return@launch }
+        } else name to GeoPoint(lat, lon)
+        android.util.Log.d("DebugRun", "anchor '$realName' $point mode=$mode named=$named")
+        val anchor = Anchor(if (named) realName else MY_AREA, point)
+        _ui.update {
+            it.copy(screen = Screen.HOME, selectedAnchor = anchor, mode = mode, modeChosenByUser = true,
+                interests = emptySet(), activeCourse = null, phase = null)
+        }
+        recommend(useLiveTraffic = false, label = name)
+    }
+
+    /** 디버그: 마지막 추천 결과 요약을 로그로 남긴다 */
+    private fun logResult(rec: com.recodate.drive.data.Recommendation) = runCatching {
+        android.util.Log.d("DebugRun", "result '${rec.request.anchor.name}' ${rec.request.mode} courses=${rec.courses.size} " +
+            rec.courses.joinToString(" | ") { c ->
+                "${c.mainParking?.name ?: "-"}: " + c.stops.joinToString(",") { it.place.name } + " walk=${c.totalWalkM}"
+            })
+    }
+
+    fun recommend(refresh: Boolean = false, useLiveTraffic: Boolean = true, label: String? = null) {
         val s = _ui.value
         val anchor = s.selectedAnchor ?: return
         recommendJob?.cancel()
@@ -163,14 +191,17 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             runCatching {
                 // 내비가 아직 준비 중이면 데모 위치(강릉역)를 출발지로 쓴다
                 val origin: GeoPoint? = navi.currentLocation() ?: c.demoNavi.currentLocation()
-                var rec = c.courseService.recommend(anchor, s.mode, s.interests, origin, vehicle.value.energy, variation)
+                var rec = c.courseService.recommend(anchor, s.mode, s.interests, origin, vehicle.value.energy, variation,
+                    useLiveTraffic = useLiveTraffic, snapshotLabel = label ?: anchor.name)
                 // 사용자가 모드를 고르지 않았고 날씨가 나쁘면 "차로 이동"으로 자동 전환
                 if (!s.modeChosenByUser && s.mode == CourseMode.PARK_AND_WALK && rec.weather?.isHarsh == true) {
-                    rec = c.courseService.recommend(anchor, CourseMode.DRIVE_AND_HOP, s.interests, origin, vehicle.value.energy, variation)
+                    rec = c.courseService.recommend(anchor, CourseMode.DRIVE_AND_HOP, s.interests, origin, vehicle.value.energy, variation,
+                        useLiveTraffic = useLiveTraffic, snapshotLabel = label ?: anchor.name)
                     _ui.update { it.copy(mode = CourseMode.DRIVE_AND_HOP, toast = "날씨가 좋지 않아 '차로 이동' 코스로 추천했어요") }
                 }
                 rec
             }.onSuccess { rec ->
+                if (BuildConfig.DEBUG) logResult(rec)
                 _ui.update {
                     it.copy(
                         loading = false,

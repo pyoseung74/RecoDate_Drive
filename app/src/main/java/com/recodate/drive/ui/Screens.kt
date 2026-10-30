@@ -267,7 +267,8 @@ private fun CourseCard(course: Course, rank: Int, compact: Boolean, modifier: Mo
         }
         Spacer(Modifier.height(16.dp))
         course.mainParking?.let { lot ->
-            ParkingLine(lot.name, course.mainParkingStatus)
+            if (lot.id == com.recodate.drive.engine.CourseRecommender.NO_LOT_ID) ParkingLine("${lot.name} 근처 (주차장 정보 없음)", null)
+            else ParkingLine(lot.name, course.mainParkingStatus)
             Spacer(Modifier.height(16.dp))
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {

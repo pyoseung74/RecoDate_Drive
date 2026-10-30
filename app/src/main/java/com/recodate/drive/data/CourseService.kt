@@ -37,6 +37,8 @@ class CourseService(
     private val traffic: TrafficSource,
     private val weather: WeatherSource,
     private val now: () -> LocalDateTime = { LocalDateTime.now(ZoneId.of("Asia/Seoul")) },
+    /** 디버그 빌드에서만: 추천 입력 데이터를 저장해 API 호출 없이 다시 테스트할 수 있게 한다 */
+    private val snapshotSink: ((Snapshot) -> Unit)? = null,
 ) {
     companion object {
         /** API 호출 수를 줄이려고 차로 이동형 검색 반경은 6km로 제한 */
@@ -51,6 +53,9 @@ class CourseService(
         origin: GeoPoint?,
         energy: VehicleEnergy,
         variation: Int = 0,
+        /** false면 TMAP 경로(실시간 교통)를 부르지 않는다. 테스트 녹화용 */
+        useLiveTraffic: Boolean = true,
+        snapshotLabel: String = anchor.name,
     ): Recommendation = coroutineScope {
         val t = now()
         val minute = t.hour * 60 + t.minute
@@ -71,6 +76,10 @@ class CourseService(
         val w = weatherJob.await()
         val placeList = placesJob.await()
         val lots = lotsJob.await()
+
+        snapshotSink?.let { sink ->
+            runCatching { sink(Snapshot(snapshotLabel, anchor, mode, minute, weekend, w, origin, placeList, lots)) }
+        }
 
         val realtimeStatus = runCatching { realtime.status(lots) }.getOrDefault(emptyMap())
         val predicted = ParkingPredictor.predictAll(lots, placeList, arriveMinute, weekend)
@@ -96,7 +105,7 @@ class CourseService(
         var courses = recommender.recommend(request, placeList, lots, variation)
 
         // 실시간 교통: 코스마다 첫 목적지(주차장)까지 TMAP 경로 1건씩, 병렬
-        if (origin != null) {
+        if (origin != null && useLiveTraffic) {
             courses = courses.map { c ->
                 async {
                     traffic.driveMinutes(origin, c.firstNaviTarget.point)?.let { c.withLiveDriveToStart(it) } ?: c
@@ -114,7 +123,8 @@ class CourseService(
 
     /**
      * 내비 목적지처럼 이름만 있는 기준점이면, 같은 장소를 후보에서 찾아 코스에 꼭 넣는다.
-     * - 같은 장소로 보는 조건: 150m 이내 + 이름이 서로 포함 관계 (가까운 아무 가게나 고르지 않도록)
+     * - 같은 장소로 보는 조건: 150m 이내 + 괄호·공백을 뺀 이름이 똑같을 때
+     *   ("스타필드 하남" ≠ "피자스탠드 스타필드하남", "불국사" ≠ "불국사박물관 일주문매표소")
      * - 못 찾으면 "관광" 장소로 만들어 넣는다.
      * - "내 주변"이나 주차장(내비 목적지가 주차장인 경우)은 중심점으로만 쓴다.
      */
@@ -124,7 +134,7 @@ class CourseService(
         val key = normalizeName(anchor.name)
         val match = candidates
             .filter { Geo.distanceM(it.point, anchor.point) <= 150 }
-            .filter { val n = normalizeName(it.name); n.isNotEmpty() && (n in key || key in n) }
+            .filter { val n = normalizeName(it.name); n.isNotEmpty() && n == key }
             .minByOrNull { Geo.distanceM(it.point, anchor.point) }
         val place = match ?: Place(
             id = "anchor",
@@ -140,8 +150,10 @@ class CourseService(
 
 const val MY_AREA = "지금 내 주변"
 
-/** 이름 비교용: 공백·괄호·특수문자를 빼고 소문자로 */
-internal fun normalizeName(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+/** 이름 비교용: [..], (..) 안의 부가 설명과 공백·특수문자를 빼고 소문자로 ("강남역[수도권2호선]" → "강남역") */
+internal fun normalizeName(s: String) =
+    s.replace(Regex("\\[[^]]*]|\\([^)]*\\)"), "").lowercase().filter { it.isLetterOrDigit() }
 
 /** 주차장 이름인지 (내비 목적지가 주차장이면 "꼭 들를 곳"이 아니다) */
 internal fun isParkingName(name: String) = "주차장" in name || name.trim().endsWith("주차")
+

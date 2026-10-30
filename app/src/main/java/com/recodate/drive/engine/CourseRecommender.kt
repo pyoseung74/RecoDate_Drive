@@ -18,6 +18,7 @@ import com.recodate.drive.model.PlaceCategory.FOOD
 import com.recodate.drive.model.PlaceCategory.GAS_STATION
 import com.recodate.drive.model.PlaceCategory.INDOOR_ACTIVITY
 import com.recodate.drive.model.PlaceCategory.WALK
+import com.recodate.drive.model.isResidentOnlyParking
 import com.recodate.drive.model.toClock
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -44,6 +45,12 @@ class CourseRecommender(
         const val DH_SEARCH_RADIUS_M = 10_000.0   // 차로 이동형: 장소 후보 반경
         const val DH_MAX_PARK_WALK_M = 260         // 장소 ↔ 주차장 최대 도보
         const val MIN_STOPS = 2
+        /** 조건에 맞는 코스가 하나도 없을 때 도보 제한을 늘리는 배수 (시골·자연 목적지 대비) */
+        const val RELAX_FACTOR = 1.7
+        /** 차로 이동형에서 목적지 근처 주차장을 찾는 최대 도보 (보통 260m보다 넓게) */
+        const val DH_ANCHOR_MAX_PARK_WALK_M = 700
+        /** 주차장 정보가 없을 때 목적지 자체를 주차 지점으로 쓰는 가상 주차장 id */
+        const val NO_LOT_ID = "no-lot"
         private const val OVERLAP_PENALTY = 0.3
     }
 
@@ -54,10 +61,27 @@ class CourseRecommender(
         variation: Int = 0,
     ): List<Course> {
         val visitable = places.filter { it.category != EV_CHARGER && it.category != GAS_STATION }
-        val ctx = Ctx(request, visitable, lots, variation)
-        val courses = when (request.mode) {
-            CourseMode.PARK_AND_WALK -> parkAndWalk(ctx)
-            CourseMode.DRIVE_AND_HOP -> driveAndHop(ctx)
+        // 방문객이 쓸 수 없는 주차장(거주자 우선·아파트·전용 주차장 등)은 후보에서 뺀다
+        val usableLots = lots.filterNot { isResidentOnlyParking(it.name) }
+        fun build(relax: Double): List<Course> {
+            val ctx = Ctx(request, visitable, usableLots, variation, relax)
+            return when (request.mode) {
+                CourseMode.PARK_AND_WALK -> parkAndWalk(ctx)
+                CourseMode.DRIVE_AND_HOP -> driveAndHop(ctx)
+            }
+        }
+        // 1단계: 기본 조건. 2단계: 하나도 없으면 도보 제한을 늘려서 다시 (화면에 표시)
+        // 3단계(한 번 주차형): 주차장 데이터가 없는 곳(시골·자연 명소)이면 목적지로 바로 안내하고 그 주변을 걷는 코스
+        val courses = build(1.0).ifEmpty {
+            build(RELAX_FACTOR).map {
+                it.copy(relaxedLimits = true, warnings = it.warnings + "주변에 조건에 맞는 곳이 적어 걷는 거리를 늘렸어요")
+            }
+        }.ifEmpty {
+            if (request.mode != CourseMode.PARK_AND_WALK) return@ifEmpty emptyList()
+            val atDestination = ParkingLot(NO_LOT_ID, request.anchor.name, request.anchor.point)
+            parkAndWalk(Ctx(request, visitable, listOf(atDestination), variation)).map {
+                it.copy(warnings = it.warnings + "주차장 정보가 없어 목적지로 안내해요. 도착 후 근처에 주차하세요")
+            }
         }
         val energyNotes = energyNotes(request, places, courses)
         return courses
@@ -75,12 +99,19 @@ class CourseRecommender(
         val places: List<Place>,
         val lots: List<ParkingLot>,
         val variation: Int,
+        /** 도보 제한 배수 (기본 1.0, 완화 단계에서 RELAX_FACTOR) */
+        val relax: Double = 1.0,
     ) {
+        val legLimit = (PW_MAX_LEG_WALK_M * relax).toInt()
+        val totalLimit = (PW_MAX_TOTAL_WALK_M * relax).toInt()
+        val parkWalkLimit = (DH_MAX_PARK_WALK_M * relax).toInt()
         val harsh = req.weather?.isHarsh == true
         val wanted: Set<PlaceCategory> = req.interests.flatMap { it.categories }.toSet()
         val used = mutableMapOf<String, Int>()
         val statusCache = mutableMapOf<String, ParkingStatus>()
-        fun status(lot: ParkingLot) = statusCache.getOrPut(lot.id) { parkingStatusOf(lot) }
+        fun status(lot: ParkingLot) = statusCache.getOrPut(lot.id) {
+            if (lot.id == NO_LOT_ID) ParkingStatus(null, OccupancySource.UNKNOWN) else parkingStatusOf(lot)
+        }
 
         /** 새로고침마다 달라지는 작은 흔들림 (0 ~ 0.08), 같은 variation이면 같은 결과 */
         fun jitter(id: String): Double =
@@ -140,7 +171,7 @@ class CourseRecommender(
         val anchor = ctx.req.anchor
         val anchorPlace = anchor.place
         val center = anchor.point
-        val maxLotWalk = if (anchorPlace != null) PW_MAX_LEG_WALK_M else PW_SEARCH_RADIUS_M.toInt()
+        val maxLotWalk = if (anchorPlace != null) ctx.legLimit else (PW_SEARCH_RADIUS_M * ctx.relax).toInt()
 
         val lotCandidates = ctx.lots
             .map { it to Geo.walkM(it.point, center) }
@@ -160,8 +191,8 @@ class CourseRecommender(
     }
 
     private fun buildParkAndWalk(ctx: Ctx, lot: ParkingLot, lotScore: Double, anchorPlace: Place?): Course? {
-        val reachable = ctx.places.filter { Geo.walkM(lot.point, it.point) <= PW_MAX_LEG_WALK_M }
-        if (anchorPlace != null && Geo.walkM(lot.point, anchorPlace.point) > PW_MAX_LEG_WALK_M) return null
+        val reachable = ctx.places.filter { Geo.walkM(lot.point, it.point) <= ctx.legLimit }
+        if (anchorPlace != null && Geo.walkM(lot.point, anchorPlace.point) > ctx.legLimit) return null
 
         val slots = template(ctx)
         val aSlot = anchorSlot(slots, anchorPlace)
@@ -175,7 +206,7 @@ class CourseRecommender(
                 .filter { it.category in slot && chosen.none { c -> c.id == it.id } }
                 .maxByOrNull {
                     placeScore(ctx, it) -
-                        0.25 * Geo.walkM(prev, it.point) / PW_MAX_LEG_WALK_M -
+                        0.25 * Geo.walkM(prev, it.point) / ctx.legLimit -
                         OVERLAP_PENALTY * (ctx.used[it.id] ?: 0)
                 } ?: return@forEachIndexed
             chosen += pick
@@ -184,7 +215,7 @@ class CourseRecommender(
         if (chosen.size < MIN_STOPS) return null
 
         // 주차장에서 출발해 돌아오는 가장 짧은 순서. 총 도보가 넘치면 상한 안에 드는 가장 좋은 조합을 고른다.
-        val order = fitWithinWalk(lot.point, chosen, anchorPlace?.id) { placeScore(ctx, it) } ?: return null
+        val order = fitWithinWalk(lot.point, chosen, anchorPlace?.id, ctx.totalLimit) { placeScore(ctx, it) } ?: return null
         val ordered = order.first
         val totalWalk = order.second
 
@@ -207,7 +238,7 @@ class CourseRecommender(
         val avgPlace = ordered.map { placeScore(ctx, it) }.average()
         val timeFit = 1 - min(1.0, (driveToStart ?: 20) / 60.0)
         val score = 0.35 * avgPlace + 0.35 * lotScore + 0.3 * timeFit -
-            0.1 * totalWalk / PW_MAX_TOTAL_WALK_M - congestionPenalty(status)
+            0.1 * totalWalk / ctx.totalLimit - congestionPenalty(status)
 
         return Course(
             id = "pw-${lot.id}-${ordered.joinToString("-") { it.id }}",
@@ -242,10 +273,11 @@ class CourseRecommender(
         start: GeoPoint,
         chosen: List<Place>,
         anchorId: String?,
+        limitM: Int = PW_MAX_TOTAL_WALK_M,
         scoreOf: (Place) -> Double,
     ): Pair<List<Place>, Int>? {
         val full = bestLoop(start, chosen)
-        if (full.second <= PW_MAX_TOTAL_WALK_M) return full
+        if (full.second <= limitM) return full
         val n = chosen.size
         var best: Pair<List<Place>, Int>? = null
         var bestKey: Triple<Int, Double, Int>? = null
@@ -254,7 +286,7 @@ class CourseRecommender(
             if (subset.size < MIN_STOPS) continue
             if (anchorId != null && subset.none { it.id == anchorId }) continue
             val loop = bestLoop(start, subset)
-            if (loop.second > PW_MAX_TOTAL_WALK_M) continue
+            if (loop.second > limitM) continue
             val key = Triple(subset.size, subset.sumOf(scoreOf), -loop.second)
             if (bestKey == null || compareValuesBy(key, bestKey, { it.first }, { it.second }, { it.third }) > 0) {
                 best = loop; bestKey = key
@@ -279,15 +311,23 @@ class CourseRecommender(
 
     // ───────────────────────── 차로 이동 (도보 최소화) ─────────────────────────
 
-    private data class Hop(val place: Place, val lot: ParkingLot, val walkM: Int, val lotScore: Double)
+    /** 장소 + 그 장소에 쓸 주차장. lot이 null이면 주차장 정보 없이 장소로 바로 안내 (목적지에만 허용) */
+    private data class Hop(val place: Place, val lot: ParkingLot?, val walkM: Int, val lotScore: Double) {
+        val naviPoint: GeoPoint get() = lot?.point ?: place.point
+    }
 
     private fun driveAndHop(ctx: Ctx): List<Course> {
         val anchor = ctx.req.anchor
         // 장소마다 가장 좋은 근처 주차장을 붙인다. 주차장이 없는 장소는 뺀다.
         val hops = ctx.places
             .filter { Geo.distanceM(anchor.point, it.point) <= DH_SEARCH_RADIUS_M || it.id == anchor.place?.id }
-            .mapNotNull { p -> hopFor(ctx, p) }
-        val anchorHop = anchor.place?.let { ap -> hops.firstOrNull { it.place.id == ap.id } ?: hopFor(ctx, ap) }
+            .mapNotNull { p -> hopFor(ctx, p, ctx.parkWalkLimit) }
+        // 목적지는 반드시 넣는다: 가까운 주차장 → 700m 안 주차장 → 주차장 없이 목적지로 바로
+        val anchorHop = anchor.place?.let { ap ->
+            hops.firstOrNull { it.place.id == ap.id }
+                ?: hopFor(ctx, ap, DH_ANCHOR_MAX_PARK_WALK_M)
+                ?: Hop(ap, lot = null, walkM = 0, lotScore = 0.4)
+        }
 
         val result = mutableListOf<Course>()
         repeat(ctx.req.courseCount + 1) {
@@ -299,12 +339,12 @@ class CourseRecommender(
         return result
     }
 
-    private fun hopFor(ctx: Ctx, p: Place): Hop? {
+    private fun hopFor(ctx: Ctx, p: Place, maxWalkM: Int): Hop? {
         val lots = ctx.lots
             .map { it to Geo.walkM(it.point, p.point) }
-            .filter { (_, w) -> w <= DH_MAX_PARK_WALK_M }
-            .map { (lot, w) -> Hop(p, lot, w, parkingScore(ctx, lot, w, DH_MAX_PARK_WALK_M)) }
-        val notFull = lots.filter { ctx.status(it.lot).level != CongestionLevel.FULL }
+            .filter { (_, w) -> w <= maxWalkM }
+            .map { (lot, w) -> Hop(p, lot, w, parkingScore(ctx, lot, w, maxWalkM)) }
+        val notFull = lots.filter { ctx.status(it.lot!!).level != CongestionLevel.FULL }
         return (notFull.ifEmpty { lots }).maxByOrNull { it.lotScore }
     }
 
@@ -335,7 +375,7 @@ class CourseRecommender(
         val ordered = permutations(chosen).minByOrNull { perm ->
             var t = 0
             var cur = start
-            for (h in perm) { t += Geo.estimateDriveMin(cur, h.lot.point, req.startMinuteOfDay, req.isWeekend); cur = h.lot.point }
+            for (h in perm) { t += Geo.estimateDriveMin(cur, h.naviPoint, req.startMinuteOfDay, req.isWeekend); cur = h.naviPoint }
             t
         } ?: chosen
 
@@ -345,25 +385,27 @@ class CourseRecommender(
         var totalWalk = 0
         var driveToStart: Int? = null
         val stops = ordered.mapIndexed { idx, h ->
-            val drive = cur?.let { Geo.estimateDriveMin(it, h.lot.point, clock, req.isWeekend) } ?: 0
+            val drive = cur?.let { Geo.estimateDriveMin(it, h.naviPoint, clock, req.isWeekend) } ?: 0
             if (idx == 0) driveToStart = if (req.origin != null) drive else null
             totalDrive += drive
             clock += drive + Geo.walkMin(h.walkM)
             totalWalk += h.walkM * 2
             val stop = CourseStop(
-                place = h.place, parking = h.lot, parkingStatus = ctx.status(h.lot),
+                place = h.place, parking = h.lot, parkingStatus = h.lot?.let { ctx.status(it) },
                 walkInM = h.walkM, driveInMin = drive, arriveMinuteOfDay = clock,
             )
             clock += h.place.category.stayMin + Geo.walkMin(h.walkM)
-            cur = h.lot.point
+            cur = h.naviPoint
             stop
         }
+        val farAnchor = anchorHop?.takeIf { it.lot != null && it.walkM > ctx.parkWalkLimit }
+        val noLotAnchor = anchorHop?.takeIf { it.lot == null }
 
         val avgPlace = ordered.map { placeScore(ctx, it.place) }.average()
         val avgLot = ordered.map { it.lotScore }.average()
         val timeFit = 1 - min(1.0, totalDrive / 90.0)
         val score = 0.35 * avgPlace + 0.35 * avgLot + 0.3 * timeFit -
-            0.1 * totalWalk / PW_MAX_TOTAL_WALK_M - stops.map { congestionPenalty(it.parkingStatus) }.average()
+            0.1 * totalWalk / ctx.totalLimit - stops.map { congestionPenalty(it.parkingStatus) }.average()
         val busy = stops.count { it.parkingStatus?.level == CongestionLevel.BUSY || it.parkingStatus?.level == CongestionLevel.FULL }
 
         return Course(
@@ -383,6 +425,8 @@ class CourseRecommender(
             warnings = listOfNotNull(
                 if (busy > 0) "혼잡한 주차장이 ${busy}곳 있어요" else null,
                 if (ordered.size < slots.size) "주차 가능한 장소가 적어 ${ordered.size}곳으로 줄였어요" else null,
+                farAnchor?.let { "${it.place.name}은 주차장에서 조금 걸어야 해요 (도보 ${it.walkM}m)" },
+                noLotAnchor?.let { "${it.place.name} 근처 주차장 정보가 없어 목적지로 바로 안내해요" },
             ),
         )
     }
@@ -400,6 +444,7 @@ class CourseRecommender(
     }
 
     private fun parkingReason(lot: ParkingLot, st: ParkingStatus): String {
+        if (lot.id == NO_LOT_ID) return "주차장 정보 없음 · 목적지 도착 후 근처 주차"
         val fee = when (lot.feePer30Min) { null -> ""; 0 -> " · 무료"; else -> " · 30분 ${lot.feePer30Min}원" }
         val congestion = if (st.source == OccupancySource.UNKNOWN) "혼잡도 정보 없음"
         else "${st.source.label} 혼잡도 ${st.level.label}"

@@ -119,6 +119,22 @@ private fun JsonObject.address(): String =
     listOf(str("upperAddrName"), str("middleAddrName"), str("lowerAddrName"), str("roadName"))
         .filter { it.isNotBlank() }.joinToString(" ")
 
+/**
+ * 이름으로 장소 1곳 찾기 (디버그 테스트에서 목적지 좌표를 정확히 잡을 때만 사용).
+ * 한도 가드를 거치며 POI 1건을 쓴다.
+ */
+suspend fun tmapSearchOne(appKey: String, quota: TmapQuota, keyword: String): Pair<String, GeoPoint>? {
+    if (TmapKeyBlock.blocked) return null
+    if (!quota.tryAcquire(TmapApi.POI)) return null
+    val url = "$TMAP/tmap/pois?version=1&format=json&count=1&reqCoordType=WGS84GEO&resCoordType=WGS84GEO" +
+        "&searchKeyword=${URLEncoder.encode(keyword, "UTF-8")}"
+    return runCatching {
+        val root = Http.getJson(url, mapOf("appKey" to appKey, "Accept" to "application/json"))
+        val poi = root.jsonObject["searchPoiInfo"]!!.jsonObject["pois"]!!.jsonObject["poi"]!!.jsonArray[0].jsonObject
+        poi.str("name") to poi.point()!!
+    }.onFailure { TmapKeyBlock.onError(it) }.getOrNull()
+}
+
 class TmapPlaceSource(private val appKey: String, private val quota: TmapQuota) : PlaceSource {
     override suspend fun nearby(center: GeoPoint, radiusM: Int, categories: Set<PlaceCategory>): List<Place> =
         coroutineScope {
