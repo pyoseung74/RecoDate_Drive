@@ -41,7 +41,8 @@ sealed interface NaviEvent {
 
 /**
  * 내비가 지금 안내 중인 경로.
- * guiding: 경로 안내 상태(NavigationStatus.ROUTE_DRIVE)인지. 상태 이벤트를 아직 못 받았으면 null.
+ * guiding: 경로 안내 상태(NavigationStatus.ROUTE_DRIVE)인지. 상태 이벤트를 아직 못 받았으면 null
+ * (null은 확인되지 않은 것으로 보고 안내 시작으로 인정하지 않는다).
  * (RouteStateInfo.isRouting은 "경로 계산 중"이라 안내 중에도 false라서 쓰지 않는다)
  */
 data class ActiveRoute(val guiding: Boolean?, val destinationName: String, val destination: GeoPoint?)

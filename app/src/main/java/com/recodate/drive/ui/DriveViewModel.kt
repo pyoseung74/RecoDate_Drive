@@ -279,15 +279,15 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     }
 
     private fun verifyRoute(seq: Int, target: NaviTarget) = viewModelScope.launch {
-        // 내비 상태가 이벤트보다 늦게 바뀔 수 있어 1초 간격으로 3번까지 확인한다
-        repeat(3) { attempt ->
+        // 내비 상태가 이벤트보다 늦게 바뀔 수 있어 1초 간격으로 5번까지 확인한다
+        repeat(5) { attempt ->
             if (attempt > 0) delay(1_000)
             val active = routeGateway?.activeRoute()
             if (seq != requestSeq) return@launch // 그사이 새 요청을 보냈다
             val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
             if (p.route != RouteStatus.REQUESTING) return@launch
-            // 내비의 현재 목적지가 요청한 지점이고, 안내 상태가 "경로 안내 중"이 아니라고 확인되지 않았을 때
-            val ok = active != null && active.guiding != false &&
+            // 내비가 "경로 안내 중"(ROUTE_DRIVE)으로 확인되고, 현재 목적지가 요청한 지점일 때만
+            val ok = active != null && active.guiding == true &&
                 active.destination?.let { Geo.distanceM(it, target.point) <= ROUTE_MATCH_M } == true
             if (ok) {
                 routeTimeoutJob?.cancel()
