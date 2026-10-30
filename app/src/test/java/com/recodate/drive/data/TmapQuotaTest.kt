@@ -62,6 +62,20 @@ class TmapQuotaTest {
     }
 
     @Test
+    fun clockGoingBackAndForth_keepsEachPeriodsCount() {
+        val store = MemoryQuotaStore()
+        day = LocalDate.of(2026, 10, 30)
+        repeat(100) { quota(store).tryAcquire(TmapApi.ROUTE) }
+        day = LocalDate.of(2026, 10, 29) // 시계가 하루 뒤로 감
+        repeat(5) { quota(store).tryAcquire(TmapApi.ROUTE) }
+        day = LocalDate.of(2026, 10, 30) // 다시 원래 날짜
+        val q = quota(store)
+        assertEquals(100, q.usedToday(TmapApi.ROUTE))
+        assertFalse("원래 날짜의 하루 상한은 그대로", q.tryAcquire(TmapApi.ROUTE))
+        assertEquals(105, q.usedThisMonth(TmapApi.ROUTE))
+    }
+
+    @Test
     fun overrideCanLowerButNotExceedHardCeiling() {
         assertEquals(10, quota(override = mapOf(TmapApi.ROUTE to 10)).dailyLimit(TmapApi.ROUTE))
         assertEquals(800, quota(override = mapOf(TmapApi.ROUTE to 999_999)).dailyLimit(TmapApi.ROUTE))

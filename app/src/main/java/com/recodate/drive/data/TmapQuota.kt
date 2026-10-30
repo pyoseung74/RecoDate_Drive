@@ -75,7 +75,8 @@ interface QuotaStore {
  * 앱을 껐다 켜도 유지되는 저장소.
  * 한 번의 commit()으로 두 값을 함께 기록한다(SharedPreferences는 파일을 통째로 바꿔 써서
  * 중간에 꺼져도 두 값이 같이 남거나 같이 안 남는다). commit()이 실패하면 false.
- * 지난 날짜·지난달 키는 같은 커밋에서 지운다.
+ * 카운터는 절대 지우지 않는다. 기기 시계가 뒤로 가거나 시간대가 바뀌어도
+ * 지금 쓰는 기간의 카운터가 지워지는 일이 없게 하기 위해서다. (하루 4개 키, 1년 약 1,500개 정도로 작다)
  */
 class PrefsQuotaStore(context: Context) : QuotaStore {
     private val prefs = context.getSharedPreferences("tmap_quota", Context.MODE_PRIVATE)
@@ -83,12 +84,6 @@ class PrefsQuotaStore(context: Context) : QuotaStore {
 
     override fun putAll(values: Map<String, Int>): Boolean = runCatching {
         val editor = prefs.edit()
-        // 키 형식 "d:날짜:API" / "m:월:API". 같은 종류·같은 API인데 기간이 지난 키는 지운다.
-        fun kindAndApi(k: String) = k.substringBefore(":") + ":" + k.substringAfterLast(":")
-        val current = values.keys.map(::kindAndApi).toSet()
-        prefs.all.keys
-            .filter { it !in values.keys && kindAndApi(it) in current }
-            .forEach { editor.remove(it) }
         values.forEach { (k, v) -> editor.putInt(k, v) }
         editor.commit()
     }.getOrDefault(false)
