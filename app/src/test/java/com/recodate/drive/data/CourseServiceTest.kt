@@ -46,11 +46,15 @@ class CourseServiceTest {
     @Test
     fun residentOnlyParking_isDetected() {
         val blocked = listOf(
-            "대명아파트이면도로거주자우선주차장", "쏠비치 삼척 타워D전용주차장", "호텔 투숙객 전용 주차구역",
-            "OO마트 고객전용", "입주민 주차장", "해오름빌라 주차장", "OO오피스텔 지하주차장",
-            "교직원 주차장", "임직원주차장", "등록차량 외 주차금지", "전기차 전용 충전주차",
+            "대명아파트이면도로거주자우선주차장", "쏠비치 삼척 타워D전용주차장", "101동전용 주차장",
+            "입주민 주차장", "래미안아파트 주차장", "교직원 주차장", "임직원주차장", "직원 주차장",
+            "등록차량 외 주차금지", "전기차 전용 충전주차", "장애인전용주차구역", "OO대학교 기숙사 주차장",
         )
-        val allowed = listOf("견소동공영주차장", "안목해변 주차장", "OO동 행정복지센터 주차장", "주민센터 주차장", "쏠비치 삼척 리조트주차장")
+        val allowed = listOf(
+            "견소동공영주차장", "안목해변 주차장", "OO동 행정복지센터 주차장", "주민센터 주차장", "쏠비치 삼척 리조트주차장",
+            "대명아파트앞 공영주차장", "스타필드 하남 고객전용 주차장", "호텔 투숙객 전용 주차장", "빌라드아모레 호텔 주차장",
+            "로끼맨션 주차장", "OO오피스텔 공용주차장", "해변 노상주차장", "OO마트 방문객 전용",
+        )
         blocked.forEach { assertTrue("막아야 함: $it", com.recodate.drive.model.isResidentOnlyParking(it)) }
         allowed.forEach { assertTrue("허용해야 함: $it", !com.recodate.drive.model.isResidentOnlyParking(it)) }
     }
