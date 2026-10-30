@@ -8,17 +8,23 @@
 
 | 항목 | 내용 |
 |---|---|
-| 위치 | [`apk/RecoDate_RecoDateDrive_release.apk`](apk/RecoDate_RecoDateDrive_release.apk) |
+| 위치 | [`apk/김표승_RecoDateDrive_release.apk`](apk/김표승_RecoDateDrive_release.apk) |
 | 빌드 | release (디버그 기능 꺼짐), versionName 0.1.0, 패키지 `com.recodate.drive` |
 | 서명 | 별도 설치를 위해 Android 디버그 인증서로 서명 (Pleos App Market 배포 시 정식 키로 다시 서명) |
 | 크기 | 약 46MB |
+
+## 시연 영상
+
+[`demo/김표승_RecoDateDrive_시연영상.mp4`](demo/김표승_RecoDateDrive_시연영상.mp4) (약 2분, 1920×1080, 한국어 자막·음성 안내 포함)
+
+Pleos Connect 에뮬레이터에서 실제 데이터로 녹화했습니다. 내비 목적지 자동 선택 → 코스 추천 → "차로 이동" 코스 → 비 오는 날 → 안내 시작(Pleos 내비) → 주차장 도착 순서입니다. 자막 파일: [`demo/김표승_RecoDateDrive_시연영상.srt`](demo/김표승_RecoDateDrive_시연영상.srt). 영상 제작 스크립트: [`docs/video/`](docs/video/)
 
 ## 실행 방법
 
 1. Pleos Connect 에뮬레이터 v2.1.0을 실행합니다. (아래 "테스트 환경" 참고)
 2. APK를 설치합니다. `-g`는 앱이 쓰는 Pleos 권한을 함께 허용합니다.
    ```
-   adb install -r -g apk/RecoDate_RecoDateDrive_release.apk
+   adb install -r -g apk/김표승_RecoDateDrive_release.apk
    ```
 3. 앱 목록에서 **RecoDate Drive**를 엽니다.
 4. 출발 화면에서 목적지를 고르고 **코스 추천 받기**를 누릅니다.
@@ -51,7 +57,7 @@
 **에뮬레이터에서 확인할 점**
 
 - **Pleos 내비가 "부팅 중"에서 멈추거나 경로 안내가 안 되면** 에뮬레이터의 DNS 문제일 수 있습니다. `-dns-server 8.8.8.8` 옵션으로 에뮬레이터를 실행하면 해결됩니다. (이 저장소의 `run_pleos_emulator.bat` 참고)
-- **에뮬레이터의 Pleos 내비는 지도 배경이 표시되지 않고** 경로선과 안내 정보만 보입니다. 경로 계산·교통 정보·도착 시간은 정상으로 동작하며, 앱 동작과는 무관합니다.
+- **에뮬레이터의 Pleos 내비는 가까이 확대한 지도 배경이 표시되지 않고** 경로선과 안내 정보만 보입니다(전체 경로 미리보기에서는 지도가 보입니다). 경로 계산·교통 정보·도착 시간은 정상으로 동작하며, 앱 동작과는 무관합니다.
 - 기어·배터리 변화는 Pleos Virtual Console(`adb forward tcp:8088 tcp:8088` 후 http://127.0.0.1:8088)로 바꿀 수 있습니다. AVD는 Cold boot로 실행해야 차량 데이터(VHAL)를 쓸 수 있습니다.
 - 에뮬레이터의 현재 위치는 판교로 잡혀 있어, 먼 목적지는 도착 시간이 길게 나옵니다.
 

@@ -3,7 +3,7 @@
 // 01 참가신청서·03 동의서·04 서명란(개인정보)은 건드리지 않는다. 앱명 칸만 채운다.
 const fs = require("fs");
 const path = require("path");
-const { APP, items } = require("./content.js");
+const { APP, items, APPLICANT } = require("./content.js");
 
 const [, , srcDir, imgDir, outDir] = process.argv;
 fs.cpSync(srcDir, outDir, { recursive: true });
@@ -108,6 +108,34 @@ xml = xml.replace(/<w:p\b[^>]*>(?:(?!<\/w:p>)[\s\S])*?프로젝트명:(?:(?!<\/w
     return whole;
   });
 });
+
+// 2-1) 01 참가신청서: 확정된 값만 채운다 (개인 참가, 성명, 인원). 부문·연락처·서명은 손으로 쓴다.
+if (APPLICANT) {
+  // label이 들어 있는 run의 밑줄을 value로 바꾸고, 다음 label(":" 포함) 전까지 이어지는 밑줄 run은 비운다
+  const fill = (label, value) => {
+    const lit = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`<w:p\\b[^>]*>(?:(?!<\\/w:p>)[\\s\\S])*?${lit}(?:(?!<\\/w:p>)[\\s\\S])*?<\\/w:p>`);
+    xml = xml.replace(re, (p) => {
+      let state = 0; // 0: 찾는 중, 1: 채운 뒤 밑줄 비우는 중, 2: 끝
+      return p.replace(/<w:t( xml:space="preserve")?>([^<]*)<\/w:t>/g, (whole, sp, text) => {
+        if (state === 0 && text.includes(label)) {
+          state = 1;
+          return `<w:t xml:space="preserve">${text.replace(/_+/, " " + esc(value) + " ").replace(/_+/g, "")}</w:t>`;
+        }
+        if (state === 1) {
+          if (text.includes(":")) { state = 2; return whole; }
+          if (/_/.test(text)) return `<w:t xml:space="preserve">${text.replace(/_+/g, "")}</w:t>`;
+        }
+        return whole;
+      });
+    });
+  };
+  xml = xml.replace("참가 단위: □ 개인", "참가 단위: ■ 개인");
+  fill("팀명(개인 참가 시 성명):", APPLICANT.name);
+  fill("대표자 성명:", APPLICANT.name);
+  fill("역할:", APPLICANT.role);
+  fill("참가 인원:", String(APPLICANT.members));
+}
 
 // 3) 문서 루트에 그림용 네임스페이스가 없으면 추가
 for (const [p, uri] of [

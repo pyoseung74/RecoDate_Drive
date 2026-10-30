@@ -37,7 +37,11 @@ class MainActivity : ComponentActivity() {
      * adb shell am start -n com.recodate.drive/.MainActivity --es anchor "삼척해수욕장" --ed lat 37.43 --ed lon 129.18 --es mode DRIVE_AND_HOP --ez named true
      */
     private fun handleDebugIntent(intent: Intent?) {
-        if (!BuildConfig.DEBUG || intent == null || !intent.hasExtra("anchor")) return
+        if (!BuildConfig.DEBUG || intent == null) return
+        // 시연 녹화용: 내비 목적지를 장소로 설정해 두고 출발 화면을 다시 불러온다
+        //   adb shell am start -n com.recodate.drive/.MainActivity --es naviDest "안목해변"
+        intent.getStringExtra("naviDest")?.let { vm.debugSetNaviDestination(it); intent.removeExtra("naviDest"); return }
+        if (!intent.hasExtra("anchor")) return
         val name = intent.getStringExtra("anchor") ?: return
         val mode = runCatching { CourseMode.valueOf(intent.getStringExtra("mode") ?: "") }.getOrDefault(CourseMode.PARK_AND_WALK)
         vm.debugRecommend(name, intent.getDoubleExtra("lat", 0.0), intent.getDoubleExtra("lon", 0.0), mode,

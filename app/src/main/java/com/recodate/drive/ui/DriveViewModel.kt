@@ -174,6 +174,16 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     }
 
     /** 디버그: 마지막 추천 결과 요약을 로그로 남긴다 */
+    /** 디버그 빌드 전용(시연 녹화): 이름으로 장소를 찾아 Pleos 내비 목적지로 설정한 뒤 출발 화면을 새로 불러온다 */
+    fun debugSetNaviDestination(name: String) = viewModelScope.launch {
+        val found = com.recodate.drive.data.tmapSearchOne(BuildConfig.TMAP_APP_KEY, c.tmapQuota, name) ?: return@launch
+        c.navi.startRoute(NaviTarget(found.first, found.second, isParking = false))
+        delay(8_000)
+        _ui.update { it.copy(screen = Screen.HOME, selectedAnchor = null, activeCourse = null, phase = null,
+            mode = CourseMode.PARK_AND_WALK, modeChosenByUser = false, interests = emptySet()) }
+        loadAnchors()
+    }
+
     private fun logResult(rec: com.recodate.drive.data.Recommendation) = runCatching {
         android.util.Log.d("DebugRun", "result '${rec.request.anchor.name}' ${rec.request.mode} courses=${rec.courses.size} " +
             rec.courses.joinToString(" | ") { c ->
