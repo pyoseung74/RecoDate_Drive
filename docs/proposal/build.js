@@ -130,11 +130,46 @@ if (APPLICANT) {
       });
     });
   };
-  xml = xml.replace("참가 단위: □ 개인", "참가 단위: ■ 개인");
-  fill("팀명(개인 참가 시 성명):", APPLICANT.name);
-  fill("대표자 성명:", APPLICANT.name);
-  fill("역할:", APPLICANT.role);
-  fill("참가 인원:", String(APPLICANT.members));
+  const team = APPLICANT.members.length > 0;
+  const everyone = [APPLICANT.leader, ...APPLICANT.members];
+  xml = team
+    ? xml.replace(/참가 단위: □ 개인(\s*<\/w:t>[\s\S]*?)□ 팀/, "참가 단위: □ 개인$1■ 팀")
+    : xml.replace("참가 단위: □ 개인", "참가 단위: ■ 개인");
+  fill("팀명(개인 참가 시 성명):", APPLICANT.teamName);
+  fill("대표자 성명:", APPLICANT.leader.name);
+  fill("역할:", APPLICANT.leader.role);
+  fill("참가 인원:", String(everyone.length));
+  // 04 하단 "팀명(팀 참가 시):" — 양식에서 "팀명(" 과 "팀 참가 시): ___" 두 run으로 나뉘어 있다
+  if (team) fill("팀 참가 시):", APPLICANT.teamName);
+
+  // 표의 (행, 열) 칸 첫 문단 끝에 글자를 넣는다. headerText로 표를 찾는다
+  const fillTable = (headerText, cells) => {
+    xml = xml.replace(/<w:tbl>[\s\S]*?<\/w:tbl>/g, (tbl) => {
+      if (!tbl.includes(headerText)) return tbl;
+      let r = -1;
+      return tbl.replace(/<w:tr\b[\s\S]*?<\/w:tr>/g, (tr) => {
+        r++;
+        let c = -1;
+        return tr.replace(/<w:tc>[\s\S]*?<\/w:tc>/g, (tc) => {
+          c++;
+          const v = cells[`${r},${c}`];
+          if (!v) return tc;
+          return tc.replace(/<\/w:p>/, `<w:r><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t xml:space="preserve">${esc(v)}</w:t></w:r></w:p>`);
+        });
+      });
+    });
+  };
+  // B 참가 구성원: 성명(0열)과 팀장 역할(4열)만. 소속·연락처·팀원 역할은 직접 기입
+  const memberCells = {};
+  everyone.forEach((p, i) => {
+    memberCells[`${i + 1},0`] = p.name;
+    if (p.role) memberCells[`${i + 1},4`] = p.role;
+  });
+  fillTable("담당 역할", memberCells);
+  // 04 서명란: 성명(1열)만. 동의 여부·서명·날짜는 본인이 직접
+  const signCells = {};
+  everyone.forEach((p, i) => { signCells[`${i + 1},1`] = p.name; });
+  fillTable("본인 서명", signCells);
 }
 
 // 3) 문서 루트에 그림용 네임스페이스가 없으면 추가

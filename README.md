@@ -2,29 +2,29 @@
 
 **목적지만 정해 두면 차 안에서 바로 "어디에 차를 대고, 어떤 순서로 돌지"까지 코스를 짜 주고, Pleos 내비가 그 주차장으로 안내하게 만드는 나들이·데이트 코스 앱입니다.**
 
-현대자동차그룹 차량용 앱 개발 공모전(Pleos Connect) 출품작입니다.
+현대자동차그룹 차량용 앱 개발 공모전(Pleos Connect) 출품작입니다. 팀 DeltaLAB (팀장 김표승, 팀원 박정우·정의영·이용근).
 
 ## APK 파일
 
 | 항목 | 내용 |
 |---|---|
-| 위치 | [`apk/김표승_RecoDateDrive_release.apk`](apk/김표승_RecoDateDrive_release.apk) |
+| 위치 | [`apk/DeltaLAB_RecoDateDrive_release.apk`](apk/DeltaLAB_RecoDateDrive_release.apk) |
 | 빌드 | release (디버그 기능 꺼짐), versionName 0.1.0, 패키지 `com.recodate.drive` |
 | 서명 | 별도 설치를 위해 Android 디버그 인증서로 서명 (Pleos App Market 배포 시 정식 키로 다시 서명) |
 | 크기 | 약 46MB |
 
 ## 시연 영상
 
-[`demo/김표승_RecoDateDrive_시연영상.mp4`](demo/김표승_RecoDateDrive_시연영상.mp4) (약 2분, 1920×1080, 한국어 자막·음성 안내 포함)
+[`demo/DeltaLAB_RecoDateDrive_시연영상.mp4`](demo/DeltaLAB_RecoDateDrive_시연영상.mp4) (약 2분, 1920×1080, 한국어 자막·음성 안내 포함)
 
-Pleos Connect 에뮬레이터에서 실제 데이터로 녹화했습니다. 내비 목적지 자동 선택 → 코스 추천 → "차로 이동" 코스 → 비 오는 날 → 안내 시작(Pleos 내비) → 주차장 도착 순서입니다. 자막 파일: [`demo/김표승_RecoDateDrive_시연영상.srt`](demo/김표승_RecoDateDrive_시연영상.srt). 영상 제작 스크립트: [`docs/video/`](docs/video/)
+Pleos Connect 에뮬레이터에서 실제 데이터로 녹화했습니다. 내비 목적지 자동 선택 → 코스 추천 → "차로 이동" 코스 → 비 오는 날 → 안내 시작(Pleos 내비) → 주차장 도착 순서입니다. 자막 파일: [`demo/DeltaLAB_RecoDateDrive_시연영상.srt`](demo/DeltaLAB_RecoDateDrive_시연영상.srt). 영상 제작 스크립트: [`docs/video/`](docs/video/)
 
 ## 실행 방법
 
 1. Pleos Connect 에뮬레이터 v2.1.0을 실행합니다. (아래 "테스트 환경" 참고)
 2. APK를 설치합니다. `-g`는 앱이 쓰는 Pleos 권한을 함께 허용합니다.
    ```
-   adb install -r -g apk/김표승_RecoDateDrive_release.apk
+   adb install -r -g apk/DeltaLAB_RecoDateDrive_release.apk
    ```
 3. 앱 목록에서 **RecoDate Drive**를 엽니다.
 4. 출발 화면에서 목적지를 고르고 **코스 추천 받기**를 누릅니다.
@@ -71,7 +71,7 @@ Pleos Connect 에뮬레이터에서 실제 데이터로 녹화했습니다. 내�
 2. `local.properties`에 API 키를 넣습니다(선택). 키가 없으면 강릉 데모 데이터로 동작합니다. → [docs/API_KEYS.md](docs/API_KEYS.md)
 3. `gradlew assembleRelease` (결과: `app/build/outputs/apk/release/app-release.apk`)
 
-- 단위 테스트: `gradlew testDebugUnitTest` (25개)
+- 단위 테스트: `gradlew testDebugUnitTest` (32개, 재생 데이터가 없으면 재생 테스트 1개는 건너뜀)
 - Windows 사용자 폴더 이름에 한글이 있으면 테스트 실행과 에뮬레이터 부팅이 실패할 수 있습니다. 영문 경로(예: `subst P: ...`)와 `GRADLE_USER_HOME=C:\Android\gradle-home`을 쓰면 됩니다.
 
 ## 구조
@@ -87,3 +87,4 @@ app/src/main/java/com/recodate/drive/
 
 - 설계: [docs/DESIGN.md](docs/DESIGN.md)
 - 테스트 방법: [docs/TESTING.md](docs/TESTING.md)
+- 출품 전 검증 결과·남은 확인·발전 우선순위: [docs/PRE_SUBMISSION_REVIEW.md](docs/PRE_SUBMISSION_REVIEW.md)

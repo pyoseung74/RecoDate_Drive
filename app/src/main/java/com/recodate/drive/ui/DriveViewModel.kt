@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.recodate.drive.AppContainer
 import com.recodate.drive.BuildConfig
 import com.recodate.drive.data.MY_AREA
+import com.recodate.drive.data.cancellableAttempt
+import com.recodate.drive.vehicle.effectiveVehicleState
 import com.recodate.drive.data.TmapApi
 import com.recodate.drive.engine.Geo
 import com.recodate.drive.data.Recommendation
@@ -85,13 +87,14 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     /** 실제 차량 값이 들어오면 그것을, 아니면 데모 값을 쓴다. 시연 스위치(배터리 낮음)도 반영 */
     val vehicle: StateFlow<VehicleState> =
         combine(c.vehicle.state, c.demoVehicle.state, c.demo.lowEnergy) { real, demo, low ->
-            val base = if (real.connected) real else demo.copy(connected = false)
+            val base = effectiveVehicleState(c.isAutomotive, real, demo)
             if (low) base.copy(energy = VehicleEnergy(evSocPercent = 12, fuelPercent = null)) else base
         }.stateIn(viewModelScope, SharingStarted.Eagerly, VehicleState())
 
     val rainDemo: StateFlow<Boolean> = c.demo.rain
     val lowEnergyDemo: StateFlow<Boolean> = c.demo.lowEnergy
     val naviConnected: StateFlow<Boolean> = c.navi.connected
+    val isAutomotive: Boolean get() = c.isAutomotive
     val usingLiveKeys: Boolean get() = c.hasTmapKey || c.hasDataKey
 
     /** 시연 패널에 보여 줄 TMAP 사용량 (키가 없으면 null) */
@@ -100,7 +103,7 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     /** TMAP 한도에 걸려 일부를 예상값·데모로 대신했는지 */
     fun tmapLimited(): Boolean = c.hasTmapKey && TmapApi.entries.any { c.tmapQuota.exhausted(it) }
 
-    private val navi: NaviGateway get() = if (c.navi.connected.value) c.navi else c.demoNavi
+    private val navi: NaviGateway get() = if (c.isAutomotive || c.navi.connected.value) c.navi else c.demoNavi
     private var recommendJob: Job? = null
     private var routeTimeoutJob: Job? = null
     /** 경로 요청 번호와 보낸 시각. 이전 요청에 대한 콜백·확인 결과를 걸러 낸다 */
@@ -111,8 +114,8 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     private var lastDrive: DriveState = DriveState.UNKNOWN
 
     init {
-        c.vehicle.start()
-        c.navi.start()
+        runCatching { c.vehicle.start() }
+        runCatching { c.navi.start() }
         viewModelScope.launch { merge(c.navi.events, c.demoNavi.events).collect(::onNaviEvent) }
         viewModelScope.launch { vehicle.collect(::onVehicle) }
         loadAnchors()
@@ -129,13 +132,14 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         // Pleos 차량이면 NaviHelper 연결을 잠깐 기다린다 (초기화는 비동기)
         if (c.isAutomotive) withTimeoutOrNull(4_000) { c.navi.connected.first { it } }
         val n = navi
-        val destJob = async { n.currentDestination() }
+        val destJob = async { if (!c.isAutomotive || n.connected.value) n.currentDestination() else null }
         val recentJob = async { n.recentDestinations() }
-        val hereJob = async { n.currentLocation() }
+        val hereJob = async { if (!c.isAutomotive || n.connected.value) n.currentLocation() else null }
         val dest = destJob.await()
         // 실제 내비에 최근 목적지가 없으면 시연용 강릉 목적지를 함께 보여 준다
         val recent = recentJob.await().ifEmpty { c.demoNavi.recentDestinations() }
-        val here = (hereJob.await() ?: c.demoNavi.currentLocation()).let { Anchor(MY_AREA, it) }
+        val here = (hereJob.await() ?: if (!c.isAutomotive) c.demoNavi.currentLocation() else null)
+            ?.let { Anchor(MY_AREA, it) }
         val list = listOfNotNull(dest, here) + recent.filter { it.name != dest?.name }
         _ui.update {
             it.copy(
@@ -198,9 +202,9 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         recommendJob = viewModelScope.launch {
             val variation = if (refresh) s.variation + 1 else 0
             _ui.update { it.copy(loading = true, error = null, variation = variation) }
-            runCatching {
-                // 내비가 아직 준비 중이면 데모 위치(강릉역)를 출발지로 쓴다
-                val origin: GeoPoint? = navi.currentLocation() ?: c.demoNavi.currentLocation()
+            cancellableAttempt {
+                // 차량 위치를 모르면 ETA를 꾸며내지 않는다.
+                val origin: GeoPoint? = if (!c.isAutomotive || navi.connected.value) navi.currentLocation() else null
                 var rec = c.courseService.recommend(anchor, s.mode, s.interests, origin, vehicle.value.energy, variation,
                     useLiveTraffic = useLiveTraffic, snapshotLabel = label ?: anchor.name)
                 // 사용자가 모드를 고르지 않았고 날씨가 나쁘면 "차로 이동"으로 자동 전환
@@ -221,7 +225,7 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
                     )
                 }
             }.onFailure { e ->
-                _ui.update { it.copy(loading = false, error = "추천 중 문제가 생겼어요: ${e.message}") }
+                _ui.update { it.copy(loading = false, error = "추천 정보를 가져오지 못했어요. 연결을 확인하고 다시 시도해 주세요.") }
             }
         }
     }
@@ -229,6 +233,7 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     // ───────────── 실행 ─────────────
 
     fun startCourse(course: Course) {
+        recommendJob?.cancel()
         _ui.update { it.copy(activeCourse = course, screen = Screen.RUN) }
         requestRoute(0, course.firstNaviTarget)
     }
@@ -261,7 +266,9 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
             if (seq != requestSeq || p.route != RouteStatus.REQUESTING) return@launch
             // 실패로 바꾸기 전에 내비 상태를 마지막으로 한 번 더 확인한다
-            if (isGuidingTo(p.target)) markGuiding(seq) else failRoute("내비가 응답하지 않아요")
+            val guiding = isGuidingTo(p.target)
+            if (seq != requestSeq || _ui.value.phase != p) return@launch
+            if (guiding) markGuiding(seq) else failRoute("내비가 응답하지 않아요")
         }
     }
 
@@ -305,7 +312,13 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     /** 한 번 주차형: 코스를 마치고 차로 돌아가기 */
     fun finish() = _ui.update { it.copy(phase = RunPhase.Finished) }
 
-    fun backToHome() = _ui.update { it.copy(screen = Screen.HOME, activeCourse = null, phase = null) }
+    fun backToHome() {
+        recommendJob?.cancel()
+        routeTimeoutJob?.cancel()
+        verifyJob?.cancel()
+        requestSeq++
+        _ui.update { it.copy(screen = Screen.HOME, activeCourse = null, phase = null, loading = false) }
+    }
     fun backToResults() = _ui.update { it.copy(screen = Screen.RESULTS) }
     fun consumeToast() = _ui.update { it.copy(toast = null) }
 
@@ -395,7 +408,7 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
 
     // ───────────── 시연 패널 ─────────────
 
-    fun setDemoDriving(driving: Boolean) = c.demoVehicle.setDriving(driving)
+    fun setDemoDriving(driving: Boolean) { if (!c.isAutomotive) c.demoVehicle.setDriving(driving) }
     fun setDemoRain(on: Boolean) { c.demo.rain.value = on }
     fun setDemoLowEnergy(on: Boolean) { c.demo.lowEnergy.value = on }
     fun simulateArrival() {

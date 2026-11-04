@@ -78,12 +78,12 @@ class CourseService(
         val lots = lotsJob.await()
 
         snapshotSink?.let { sink ->
-            runCatching { sink(Snapshot(snapshotLabel, anchor, mode, minute, weekend, w, origin, placeList, lots)) }
+            cancellableAttempt { sink(Snapshot(snapshotLabel, anchor, mode, minute, weekend, w, origin, placeList, lots)) }
         }
 
-        val realtimeStatus = runCatching { realtime.status(lots) }.getOrDefault(emptyMap())
+        val realtimeStatus = cancellableAttempt { realtime.status(lots) }.getOrDefault(emptyMap())
         val predicted = ParkingPredictor.predictAll(lots, placeList, arriveMinute, weekend)
-        runCatching {
+        cancellableAttempt {
             android.util.Log.d("CourseService", "parking lots=${lots.size} places=${placeList.size} " +
                 "arrive=${arriveMinute / 60}h weekend=$weekend levels=" +
                 predicted.values.groupingBy { it.level }.eachCount())

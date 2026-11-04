@@ -89,7 +89,8 @@ fun DriveApp(vm: DriveViewModel) {
                     .clip(RoundedCornerShape(20.dp)).background(C.surface2).padding(horizontal = 40.dp, vertical = 22.dp),
             ) { Text(msg, style = MaterialTheme.typography.titleMedium, color = C.text) }
         }
-        if (demoOpen) DemoPanel(vm, vehicle) { demoOpen = false }
+        LaunchedEffect(vehicle.restricted) { if (vehicle.restricted && vm.isAutomotive) demoOpen = false }
+        if (demoOpen && (!vehicle.restricted || !vm.isAutomotive)) DemoPanel(vm, vehicle) { demoOpen = false }
     }
 }
 
@@ -117,7 +118,8 @@ private fun StatusBar(vm: DriveViewModel, v: VehicleState, onDemo: () -> Unit) {
         Pill(Icons.Filled.Navigation, if (v.connected || naviOn) "Pleos 연결됨" else "데모 차량", if (v.connected || naviOn) C.info else C.sub)
         Spacer(Modifier.width(16.dp))
         Box(
-            Modifier.clip(CircleShape).background(C.surface2).clickable(onClick = onDemo).padding(18.dp),
+            Modifier.clip(CircleShape).background(C.surface2)
+                .clickable(enabled = !v.restricted || !vm.isAutomotive, onClick = onDemo).padding(18.dp),
         ) { Icon(Icons.Filled.Science, "시연 패널", tint = C.sub, modifier = Modifier.size(36.dp)) }
     }
 }
@@ -224,7 +226,8 @@ private fun ResultsScreen(vm: DriveViewModel, ui: UiState, v: VehicleState) {
                     Icon(Icons.Filled.WbCloudy, null, tint = C.sub, modifier = Modifier.size(28.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        weatherText + (if (rec.usedDemoData) "   ·   데모 데이터" else "") +
+                        weatherText + (if (w?.source == com.recodate.drive.model.DataSource.DEMO) " (시연 날씨)" else "") +
+                            (if (rec.usedDemoData) "   ·   데모 데이터" else "") +
                             (if (vm.tmapLimited()) "   ·   TMAP 오늘 한도 도달 → 예상값 사용" else ""),
                         color = C.sub, style = MaterialTheme.typography.bodyMedium,
                     )
@@ -439,7 +442,7 @@ private fun DemoPanel(vm: DriveViewModel, v: VehicleState, onClose: () -> Unit) 
             Text("시연 패널", style = MaterialTheme.typography.headlineMedium)
             Text("발표·심사 시연용 상황 바꾸기", color = C.sub, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(24.dp))
-            if (!v.connected) ToggleRow("주행 중 (기어 D)", v.drive == DriveState.DRIVING) { vm.setDemoDriving(it) }
+            if (!vm.isAutomotive) ToggleRow("주행 중 (기어 D)", v.drive == DriveState.DRIVING) { vm.setDemoDriving(it) }
             else Text("기어는 Pleos 차량 값(Virtual Console)을 따릅니다", color = C.sub, style = MaterialTheme.typography.bodyMedium)
             ToggleRow("비 오는 날", rain) { vm.setDemoRain(it) }
             ToggleRow("배터리 12%", low) { vm.setDemoLowEnergy(it) }

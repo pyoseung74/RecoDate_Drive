@@ -128,7 +128,7 @@ suspend fun tmapSearchOne(appKey: String, quota: TmapQuota, keyword: String): Pa
     if (!quota.tryAcquire(TmapApi.POI)) return null
     val url = "$TMAP/tmap/pois?version=1&format=json&count=1&reqCoordType=WGS84GEO&resCoordType=WGS84GEO" +
         "&searchKeyword=${URLEncoder.encode(keyword, "UTF-8")}"
-    return runCatching {
+    return cancellableAttempt {
         val root = Http.getJson(url, mapOf("appKey" to appKey, "Accept" to "application/json"))
         val poi = root.jsonObject["searchPoiInfo"]!!.jsonObject["pois"]!!.jsonObject["poi"]!!.jsonArray[0].jsonObject
         poi.str("name") to poi.point()!!
@@ -141,7 +141,7 @@ class TmapPlaceSource(private val appKey: String, private val quota: TmapQuota) 
             categories.mapNotNull { cat -> CATEGORY_QUERY[cat]?.let { q -> cat to q } }
                 .map { (cat, q) ->
                     async {
-                        runCatching { tmapAround(appKey, quota, center, radiusM, q, 30) }
+                        cancellableAttempt { tmapAround(appKey, quota, center, radiusM, q, 30) }
                             .onFailure { android.util.Log.w("Tmap", "POI '$q' failed: $it") }
                             .getOrDefault(emptyList())
                             .mapNotNull { poi ->
@@ -204,7 +204,7 @@ class TmapTrafficSource(private val appKey: String, private val quota: TmapQuota
         if (!quota.tryAcquire(TmapApi.ROUTE)) return null
         val body = """{"startX":"${from.lon}","startY":"${from.lat}","endX":"${to.lon}","endY":"${to.lat}",""" +
             """"reqCoordType":"WGS84GEO","resCoordType":"WGS84GEO","searchOption":"0","trafficInfo":"Y"}"""
-        return runCatching {
+        return cancellableAttempt {
             val root: JsonElement = Http.postJson("$TMAP/tmap/routes?version=1&format=json", body, mapOf("appKey" to appKey))
             val sec = root.jsonObject["features"]!!.jsonArray[0].jsonObject["properties"]!!
                 .jsonObject["totalTime"]!!.jsonPrimitive.int

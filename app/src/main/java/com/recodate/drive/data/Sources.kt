@@ -68,12 +68,12 @@ class DemoWeatherSource(private val raining: () -> Boolean) : WeatherSource {
 /** 실시간 → 실패하면 데모로 대체 */
 class FallbackPlaceSource(private val live: PlaceSource, private val demo: PlaceSource) : PlaceSource {
     override suspend fun nearby(center: GeoPoint, radiusM: Int, categories: Set<PlaceCategory>) =
-        runCatching { live.nearby(center, radiusM, categories) }.getOrNull()?.takeIf { it.isNotEmpty() }
+        cancellableAttempt { live.nearby(center, radiusM, categories) }.getOrNull()?.takeIf { it.isNotEmpty() }
             ?: demo.nearby(center, radiusM, categories)
 }
 
 class FallbackParkingSource(private val live: ParkingSource, private val demo: ParkingSource) : ParkingSource {
     override suspend fun nearby(center: GeoPoint, radiusM: Int) =
-        runCatching { live.nearby(center, radiusM) }.getOrNull()?.takeIf { it.isNotEmpty() }
+        cancellableAttempt { live.nearby(center, radiusM) }.getOrNull()?.takeIf { it.isNotEmpty() }
             ?: demo.nearby(center, radiusM)
 }

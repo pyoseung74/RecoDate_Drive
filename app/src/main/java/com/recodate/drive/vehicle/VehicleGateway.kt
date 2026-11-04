@@ -30,6 +30,12 @@ interface VehicleGateway {
     fun stop()
 }
 
+/** Automotive hardware must never inherit the demo's parked state. */
+internal fun effectiveVehicleState(isAutomotive: Boolean, real: VehicleState, demo: VehicleState): VehicleState =
+    if (isAutomotive) {
+        if (real.connected) real else VehicleState(energy = real.energy)
+    } else demo.copy(connected = false)
+
 /**
  * Pleos Vehicle SDK 구현.
  * - 기어: Gear.registerGearSelection (P = 정차, 그 밖 = 주행)
@@ -43,7 +49,7 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
 
     private val gearListener = object : GearSelectionListener {
         override fun onSelected(gear: VehicleGear?) = onGear(gear)
-        override fun onFailed(e: Exception) { Log.w(TAG, "gear listener failed", e) }
+        override fun onFailed(e: Exception) { gearFailed(e) }
     }
     private val socListener = object : EvBatteryStateOfChargeListener {
         override fun onEvBatteryStateOfChargeUpdated(value: Int?) {
@@ -63,7 +69,7 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
         val gear = vehicle.getGear()
         gear.getCurrentGearSelectionState(
             { g -> onGear(g) },
-            { e -> Log.w(TAG, "gear read failed", e) },
+            { e -> gearFailed(e) },
         )
         gear.registerGearSelection(gearListener)
 
@@ -89,6 +95,11 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
             else -> DriveState.DRIVING
         }
         _state.update { it.copy(drive = drive, connected = true) }
+    }
+
+    private fun gearFailed(e: Exception) {
+        _state.update { it.copy(drive = DriveState.UNKNOWN, connected = false) }
+        Log.w(TAG, "gear unavailable", e)
     }
 
     override fun stop() {

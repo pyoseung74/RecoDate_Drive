@@ -32,7 +32,7 @@ class KmaWeatherSource(private val serviceKey: String) : WeatherSource {
 
     private data class Fcst(val dateTime: LocalDateTime, val category: String, val value: String)
 
-    override suspend fun forecast(at: GeoPoint, minuteOfDay: Int): Weather? = runCatching {
+    override suspend fun forecast(at: GeoPoint, minuteOfDay: Int): Weather? = cancellableAttempt {
         val (nx, ny) = toGrid(at.lat, at.lon)
         val now = LocalDateTime.now(zone)
         val (baseDate, baseTime) = baseDateTime(now)
@@ -44,7 +44,7 @@ class KmaWeatherSource(private val serviceKey: String) : WeatherSource {
         var target = now.toLocalDate().atStartOfDay().plusMinutes(minuteOfDay.toLong())
         if (target.isBefore(now.minusHours(1))) target = target.plusDays(1)
         val times = items.map { it.dateTime }.distinct()
-        val nearest = times.minByOrNull { abs(java.time.Duration.between(it, target).toMinutes()) } ?: return@runCatching null
+        val nearest = times.minByOrNull { abs(java.time.Duration.between(it, target).toMinutes()) } ?: return@cancellableAttempt null
         val at0 = items.filter { it.dateTime == nearest }.associate { it.category to it.value }
 
         Weather(

@@ -40,13 +40,13 @@ object Http {
     /** 실패 원인을 로그로 남긴다. 주소의 키 값은 가린다 */
     private fun parse(res: okhttp3.Response, url: String): JsonElement {
         val body = res.body?.string().orEmpty()
-        val safeUrl = url.replace(Regex("(serviceKey|appKey)=[^&]+"), "$1=***").substringBefore("&", url.take(80))
+        val safeUrl = url.substringBefore('?')
         if (!res.isSuccessful) {
-            android.util.Log.w("Http", "HTTP ${res.code} $safeUrl :: ${body.take(300)}")
+            android.util.Log.w("Http", "HTTP ${res.code} $safeUrl")
             throw HttpError(res.code)
         }
         return runCatching { json.parseToJsonElement(body) }.getOrElse {
-            android.util.Log.w("Http", "non-JSON $safeUrl :: ${body.take(300)}")
+            android.util.Log.w("Http", "non-JSON $safeUrl")
             throw it
         }
     }
