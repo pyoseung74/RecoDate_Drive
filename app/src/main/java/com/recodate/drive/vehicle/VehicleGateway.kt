@@ -12,7 +12,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
-enum class DriveState { PARKED, DRIVING, UNKNOWN }
+/** DRIVING = 전진 기어(D·수동 단수), MANEUVERING = 후진·중립(주차 조정 등). P가 아니면 모두 주행 중 제한 */
+enum class DriveState { PARKED, DRIVING, MANEUVERING, UNKNOWN }
 
 data class VehicleState(
     val drive: DriveState = DriveState.UNKNOWN,
@@ -92,6 +93,7 @@ class PleosVehicleGateway(context: Context) : VehicleGateway {
         val drive = when (g) {
             VehicleGear.GEAR_PARK -> DriveState.PARKED
             null, VehicleGear.GEAR_UNKNOWN -> DriveState.UNKNOWN
+            VehicleGear.GEAR_REVERSE, VehicleGear.GEAR_NEUTRAL -> DriveState.MANEUVERING
             else -> DriveState.DRIVING
         }
         _state.update { it.copy(drive = drive, connected = true) }

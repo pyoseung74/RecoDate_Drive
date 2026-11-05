@@ -51,7 +51,13 @@ sealed interface RunPhase {
         val failReason: String? = null,
     ) : RunPhase
     /** 주차 완료. stopIndex 장소부터 걸어서 돌기 (한 번 주차형) 또는 해당 장소 방문 (차로 이동형) */
-    data class Visiting(val stopIndex: Int) : RunPhase
+    data class Visiting(
+        val stopIndex: Int,
+        /** P단 + 위치로 자동 도착 처리했는지 (틀렸으면 되돌릴 수 있게) */
+        val autoArrived: Boolean = false,
+        /** 자동 도착 전의 안내 단계 (되돌리기용) */
+        val from: DrivingTo? = null,
+    ) : RunPhase
     data object Finished : RunPhase
 }
 
@@ -71,14 +77,30 @@ data class UiState(
     val activeCourse: Course? = null,
     val phase: RunPhase? = null,
     val toast: String? = null,
+    /** 실행 중 지연(분): 마지막으로 주차장에 도착한 시각 − 계획 시각. 음수면 일찍 도착 */
+    val delayMin: Int? = null,
+    /** 충전 제안을 골랐는지: 그 단계에서 주차장 대신 충전소로 안내한다 */
+    val chargeChosen: Boolean = false,
 )
 
-class DriveViewModel(private val c: AppContainer) : ViewModel() {
+class DriveViewModel(
+    private val c: AppContainer,
+    /** 지금 한국 시각(자정부터 분) */
+    private val nowMinute: () -> Int = {
+        java.time.LocalTime.now(java.time.ZoneId.of("Asia/Seoul")).let { it.hour * 60 + it.minute }
+    },
+) : ViewModel() {
 
     companion object {
         const val ROUTE_TIMEOUT_MS = 25_000L
         /** 내비 목적지와 요청 지점이 이 거리 안이면 같은 목적지로 본다 (내비가 입구 좌표로 보정할 수 있음) */
         const val ROUTE_MATCH_M = 100.0
+        /** P단으로 세운 곳이 목표 주차장에서 이 거리 안이면 도착으로 본다 */
+        const val AUTO_ARRIVE_M = 300.0
+        /** P단을 이만큼 유지해야 자동 도착 (잠깐 P에 넣었다 빼는 경우 제외) */
+        const val AUTO_ARRIVE_HOLD_MS = 5_000L
+        /** 내비 안내가 꺼진 뒤 이만큼 기다렸다가 확인 (도착 이벤트가 먼저 오면 그것으로 처리) */
+        const val GUIDE_END_GRACE_MS = 4_000L
     }
 
     private val _ui = MutableStateFlow(UiState())
@@ -111,7 +133,14 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     private var requestSentAt = 0L
     private var routeGateway: NaviGateway? = null
     private var verifyJob: Job? = null
-    private var lastDrive: DriveState = DriveState.UNKNOWN
+    /** 마지막으로 확인된 P 또는 전진 기어. 후진·중립·모름은 건너뛴다 (P→R→D도 출발로 본다) */
+    private var lastSettled: DriveState = DriveState.UNKNOWN
+    /** P단에 들어간 시각(System.nanoTime). P가 아니면 null */
+    private var parkedAt: Long? = null
+    private var autoArriveJob: Job? = null
+    private var guideEndJob: Job? = null
+    /** init보다 먼저 선언해야 init의 첫 목록 조회 작업이 여기 남는다 */
+    private var anchorsJob: Job? = null
 
     init {
         runCatching { c.vehicle.start() }
@@ -128,7 +157,21 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
 
     // ───────────── 출발 화면 ─────────────
 
-    fun loadAnchors() = viewModelScope.launch {
+    /**
+     * 앱 화면이 다시 보일 때(내비에서 돌아오거나 앱을 다시 열 때) 출발 화면이면 목적지 목록을 새로 읽는다.
+     * ViewModel은 프로세스 동안 유지되므로, 그사이 내비에 새로 찍은 목적지를 여기서 반영한다.
+     */
+    fun onAppVisible() {
+        val s = _ui.value
+        if (s.screen == Screen.HOME && !s.loading) loadAnchors()
+    }
+
+    fun loadAnchors() {
+        anchorsJob?.cancel()
+        anchorsJob = launchLoadAnchors()
+    }
+
+    private fun launchLoadAnchors() = viewModelScope.launch {
         // Pleos 차량이면 NaviHelper 연결을 잠깐 기다린다 (초기화는 비동기)
         if (c.isAutomotive) withTimeoutOrNull(4_000) { c.navi.connected.first { it } }
         val n = navi
@@ -145,7 +188,12 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             it.copy(
                 naviDestination = dest,
                 anchors = list,
-                selectedAnchor = it.selectedAnchor ?: dest ?: recent.firstOrNull() ?: here,
+                // 내비 목적지가 새로 바뀌었으면 그것을 고른다. 아니면 고른 것을 유지(목록에 남아 있을 때)
+                selectedAnchor = when {
+                    dest != null && dest != it.naviDestination -> dest
+                    it.selectedAnchor != null && it.selectedAnchor in list -> it.selectedAnchor
+                    else -> dest ?: recent.firstOrNull() ?: here
+                },
             )
         }
     }
@@ -234,7 +282,7 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
 
     fun startCourse(course: Course) {
         recommendJob?.cancel()
-        _ui.update { it.copy(activeCourse = course, screen = Screen.RUN) }
+        _ui.update { it.copy(activeCourse = course, screen = Screen.RUN, delayMin = null, chargeChosen = false) }
         requestRoute(0, course.firstNaviTarget)
     }
 
@@ -246,6 +294,8 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     private fun requestRoute(stopIndex: Int, target: NaviTarget) {
         routeTimeoutJob?.cancel()
         verifyJob?.cancel()
+        autoArriveJob?.cancel()
+        guideEndJob?.cancel()
         val gateway: NaviGateway? = when {
             c.navi.connected.value -> c.navi
             !c.isAutomotive -> c.demoNavi
@@ -277,6 +327,19 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         s.copy(phase = p.copy(route = RouteStatus.FAILED, failReason = reason))
     }
 
+    /** 차로 이동형: 다음 장소는 충전소로 안내하도록 미리 고른다 (다시 출발하면 자동 안내에도 적용) */
+    fun chooseChargerNext(on: Boolean) = _ui.update { it.copy(chargeChosen = on) }
+
+    /** 충전 제안이 있으면: 지금 가는 주차장 대신 충전소로 안내를 바꾼다 (사용자가 고를 때만) */
+    fun routeToCharger() {
+        val s = _ui.value
+        val p = s.phase as? RunPhase.DrivingTo ?: return
+        val ch = s.activeCourse?.charge?.takeIf { it.stopIndex == p.stopIndex } ?: return
+        _ui.update { it.copy(chargeChosen = true) }
+        if (p.target.point == ch.charger.point) return
+        requestRoute(p.stopIndex, NaviTarget(ch.charger.name, ch.charger.point, isParking = true))
+    }
+
     /** 실패한 경로 요청 다시 보내기 */
     fun retryRoute() {
         val p = _ui.value.phase as? RunPhase.DrivingTo ?: return
@@ -290,7 +353,10 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         val idx = when (val p = s.phase) { is RunPhase.Visiting -> p.stopIndex + 1; else -> return }
         if (idx >= course.stops.size) { finish(); return }
         val stop = course.stops[idx]
-        val target = stop.parking?.let { NaviTarget(it.name, it.point, true) } ?: NaviTarget(stop.place.name, stop.place.point, false)
+        val charger = course.charge?.takeIf { s.chargeChosen && it.stopIndex == idx }?.charger
+        val target = charger?.let { NaviTarget(it.name, it.point, true) }
+            ?: stop.parking?.let { NaviTarget(it.name, it.point, true) }
+            ?: NaviTarget(stop.place.name, stop.place.point, false)
         requestRoute(idx, target)
     }
 
@@ -303,10 +369,39 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         else _ui.update { it.copy(phase = RunPhase.Visiting(p.stopIndex + 1)) }
     }
 
-    /** 수동 도착 처리 (내비 이벤트가 오지 않을 때) */
-    fun markArrived() {
-        val p = _ui.value.phase as? RunPhase.DrivingTo ?: return
-        _ui.update { it.copy(phase = RunPhase.Visiting(p.stopIndex)) }
+    /** 도착 처리 (내비 도착 이벤트, 수동 버튼) */
+    fun markArrived() = arrive(auto = false)
+
+    private fun arrive(auto: Boolean) {
+        val s = _ui.value
+        val p = s.phase as? RunPhase.DrivingTo ?: return
+        autoArriveJob?.cancel()
+        guideEndJob?.cancel()
+        routeTimeoutJob?.cancel()
+        val late = s.activeCourse?.stops?.getOrNull(p.stopIndex)?.let { delayMinutes(nowMinute(), it) }
+        _ui.update {
+            it.copy(
+                phase = RunPhase.Visiting(p.stopIndex, autoArrived = auto, from = if (auto) p else null),
+                delayMin = late ?: it.delayMin,
+                toast = if (auto) "주차장 근처에 P단으로 세워 도착으로 처리했어요" else it.toast,
+            )
+        }
+    }
+
+    /** 자동 도착이 틀렸을 때 안내 단계로 되돌린다 (내비 안내는 계속 중이라 다시 요청하지 않는다) */
+    fun undoAutoArrival() {
+        val p = _ui.value.phase as? RunPhase.Visiting ?: return
+        val back = p.from ?: return
+        _ui.update { it.copy(phase = back) }
+        // 그사이 내비 안내가 끝났거나 바뀌었을 수 있다: 지금도 이 주차장을 안내 중인지 확인하고,
+        // 아니면 "다시 시도"를 누를 수 있게 실패로 표시한다
+        val seq = requestSeq
+        guideEndJob?.cancel()
+        guideEndJob = viewModelScope.launch {
+            val guiding = isGuidingTo(back.target)
+            if (seq != requestSeq || _ui.value.phase != back) return@launch
+            if (!guiding) failRoute("내비 안내가 끝나 있어요. 다시 시도하면 이 주차장으로 안내해요")
+        }
     }
 
     /** 한 번 주차형: 코스를 마치고 차로 돌아가기 */
@@ -316,8 +411,10 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         recommendJob?.cancel()
         routeTimeoutJob?.cancel()
         verifyJob?.cancel()
+        autoArriveJob?.cancel()
+        guideEndJob?.cancel()
         requestSeq++
-        _ui.update { it.copy(screen = Screen.HOME, activeCourse = null, phase = null, loading = false) }
+        _ui.update { it.copy(screen = Screen.HOME, activeCourse = null, phase = null, loading = false, delayMin = null) }
     }
     fun backToResults() = _ui.update { it.copy(screen = Screen.RESULTS) }
     fun consumeToast() = _ui.update { it.copy(toast = null) }
@@ -335,7 +432,12 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
         if (e.at < requestSentAt) return
         when (e) {
             is NaviEvent.RouteStarted -> if (p.route != RouteStatus.GUIDING) startVerify()
-            is NaviEvent.StatusChanged -> if (e.guiding && p.route != RouteStatus.GUIDING) startVerify()
+            is NaviEvent.StatusChanged ->
+                if (e.guiding) {
+                    // 안내 중에 다시 "안내 시작"이 오면 다른 목적지로 바뀌었을 수 있으니 목적지를 다시 확인한다
+                    if (p.route != RouteStatus.GUIDING) startVerify()
+                    else checkGuidanceEnded("내비가 다른 목적지를 안내하고 있어요. 다시 시도하면 이 코스로 안내해요", destinationChanged = true)
+                } else if (p.route == RouteStatus.GUIDING) checkGuidanceEnded()
             is NaviEvent.Error -> if (p.route == RouteStatus.REQUESTING) {
                 routeTimeoutJob?.cancel()
                 failRoute(naviErrorText(e.message))
@@ -343,6 +445,61 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             // 우리가 요청한 안내가 시작된 뒤의 도착만 처리한다
             is NaviEvent.Arrived -> if (p.route == RouteStatus.GUIDING && sameDestination(e.name, p.target.name)) markArrived()
             is NaviEvent.WaypointArrived -> Unit
+        }
+    }
+
+    /**
+     * 내비 안내가 꺼졌다 (사용자가 취소했거나, 다른 목적지로 바꿨거나, 도착해서 끝났거나).
+     * 잠깐 기다려도 도착 처리가 안 됐고 내비가 우리 목적지를 안내하고 있지 않으면 "안내 끝남"으로 표시해
+     * 다시 안내하거나 도착 처리할 수 있게 한다. 이전 목적지로 자동 도착하는 일도 막는다.
+     */
+    private fun checkGuidanceEnded(
+        reason: String = "내비 안내가 끝났어요. 도착했다면 도착 처리를 눌러 주세요",
+        /** 다른 목적지로 바뀌었을 수 있는 경우: 이전 목적지 기준 자동 도착은 기다리지 않고 취소한다 */
+        destinationChanged: Boolean = false,
+    ) {
+        if (destinationChanged) autoArriveJob?.cancel()
+        guideEndJob?.cancel()
+        val seq = requestSeq
+        guideEndJob = viewModelScope.launch {
+            delay(GUIDE_END_GRACE_MS)
+            // 주차장 입구에서 안내가 끝나며 P단에 넣은 경우: 자동 도착 판정을 먼저 끝까지 기다린다
+            if (!destinationChanged) autoArriveJob?.takeIf { it.isActive }?.join()
+            val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
+            if (seq != requestSeq || p.route != RouteStatus.GUIDING) return@launch
+            if (isGuidingTo(p.target)) return@launch
+            if (seq != requestSeq || _ui.value.phase != p) return@launch
+            failRoute(reason)
+        }
+    }
+
+    /**
+     * P단으로 5초 이상 세웠고 그 자리가 안내 중인 주차장에서 300m 안이면 도착으로 처리한다.
+     * 내비 도착 이벤트가 안 오거나(이름이 달라서 등) 주차장 입구 앞에서 안내가 끝나는 경우를 메운다.
+     * 위치를 모르면(내비 미연결·위치 없음) 아무것도 하지 않고 수동 도착을 쓴다.
+     */
+    private fun scheduleAutoArrival() {
+        autoArriveJob?.cancel()
+        val since = parkedAt ?: return
+        if (since < requestSentAt) return  // 안내를 요청하기 전부터 서 있던 경우
+        val gateway = routeGateway ?: return
+        if (gateway !== c.navi || !c.navi.connected.value) return  // 데모 내비의 고정 위치로는 판정하지 않는다
+        val seq = requestSeq
+        autoArriveJob = viewModelScope.launch {
+            delay(AUTO_ARRIVE_HOLD_MS)
+            if (parkedAt != since || vehicle.value.drive != DriveState.PARKED) return@launch
+            val p = _ui.value.phase as? RunPhase.DrivingTo ?: return@launch
+            if (seq != requestSeq || p.route != RouteStatus.GUIDING) return@launch
+            val here = gateway.currentLocation() ?: return@launch
+            // 위치를 기다리는 동안 출발했거나 안내가 바뀌었으면 취소
+            if (parkedAt != since || vehicle.value.drive != DriveState.PARKED) return@launch
+            if (seq != requestSeq || _ui.value.phase != p) return@launch
+            if (Geo.distanceM(here, p.target.point) > AUTO_ARRIVE_M) return@launch
+            // 내비 목적지가 그사이 다른 곳으로 바뀌었으면 도착으로 보지 않는다 (안내가 끝나 목적지가 비었으면 허용)
+            val dest = gateway.activeRoute()?.destination
+            if (dest != null && Geo.distanceM(dest, p.target.point) > ROUTE_MATCH_M) return@launch
+            if (parkedAt != since || seq != requestSeq || _ui.value.phase != p) return@launch
+            arrive(auto = true)
         }
     }
 
@@ -376,6 +533,8 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
             val p = s.phase as? RunPhase.DrivingTo ?: return@update s
             s.copy(phase = p.copy(route = RouteStatus.GUIDING, failReason = null))
         }
+        // 안내 확인보다 P단 전환이 먼저 왔을 수 있다
+        if (parkedAt != null) scheduleAutoArrival()
     }
 
     /** 내비가 알려 준 목적지 이름이 우리가 요청한 이름과 같은지 (공백·대소문자 무시) */
@@ -395,8 +554,21 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
      * 차로 이동형에서 장소를 둘러본 뒤 다시 출발(P → 주행)하면 다음 장소 안내를 자동으로 시작한다.
      */
     private fun onVehicle(v: VehicleState) {
-        val wasParked = lastDrive == DriveState.PARKED
-        lastDrive = v.drive
+        // P단에 들어간 시각을 기록하고, P에서 나오면 지운다
+        if (v.drive == DriveState.PARKED) {
+            if (parkedAt == null) {
+                parkedAt = System.nanoTime()
+                val p = _ui.value.phase
+                if (p is RunPhase.DrivingTo && p.route == RouteStatus.GUIDING) scheduleAutoArrival()
+            }
+        } else {
+            // 기어를 모르게 된 경우도 P 유지로 보지 않는다
+            parkedAt = null
+            autoArriveJob?.cancel()
+        }
+        // 후진·중립을 거쳐도(P→R→D) 출발로 본다. P→R→P(주차 조정)는 출발이 아니다
+        val wasParked = lastSettled == DriveState.PARKED
+        if (v.drive == DriveState.PARKED || v.drive == DriveState.DRIVING) lastSettled = v.drive
         val s = _ui.value
         if (wasParked && v.drive == DriveState.DRIVING &&
             s.activeCourse?.mode == CourseMode.DRIVE_AND_HOP && s.phase is RunPhase.Visiting
@@ -416,4 +588,14 @@ class DriveViewModel(private val c: AppContainer) : ViewModel() {
     }
 
     val weatherOfLast: Weather? get() = _ui.value.recommendation?.weather
+}
+
+/**
+ * 계획 대비 지연(분). 비교 기준은 "주차장 도착 계획 시각" = 장소 도착 계획 − 주차장에서 걷는 시간.
+ * 자정을 넘는 경우를 고려해 −12시간 ~ +12시간 범위로 맞춘다.
+ */
+internal fun delayMinutes(nowMinuteOfDay: Int, stop: com.recodate.drive.model.CourseStop): Int {
+    val plannedPark = stop.arriveMinuteOfDay - Geo.walkMin(stop.walkInM)
+    val d = ((nowMinuteOfDay - plannedPark) % 1440 + 1440) % 1440
+    return if (d >= 720) d - 1440 else d
 }

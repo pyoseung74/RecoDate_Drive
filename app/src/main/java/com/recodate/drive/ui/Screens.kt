@@ -53,6 +53,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.recodate.drive.engine.Geo
 import com.recodate.drive.model.Course
 import com.recodate.drive.model.CourseMode
 import com.recodate.drive.model.Interest
@@ -106,6 +107,7 @@ private fun StatusBar(vm: DriveViewModel, v: VehicleState, onDemo: () -> Unit) {
         val (driveText, driveColor) = when (v.drive) {
             DriveState.PARKED -> "정차 (P)" to C.good
             DriveState.DRIVING -> "주행 중 · 간단 모드" to C.normal
+            DriveState.MANEUVERING -> "R·N 기어 · 간단 모드" to C.normal
             DriveState.UNKNOWN -> "기어 확인 중" to C.sub
         }
         Pill(Icons.Filled.DirectionsCar, driveText, driveColor)
@@ -329,6 +331,9 @@ private fun ParkingLine(name: String, status: ParkingStatus?, small: Boolean = f
 private fun RunScreen(vm: DriveViewModel, ui: UiState, v: VehicleState) {
     val course = ui.activeCourse ?: return
     val phase = ui.phase
+    // 한 번 주차형에서 충전소에 세우기로 했으면 차는 충전소에 있다
+    val carLot = course.charge?.takeIf { ui.chargeChosen && course.mode == CourseMode.PARK_AND_WALK }?.charger
+        ?.let { com.recodate.drive.model.ParkingLot(it.id, it.name, it.point) } ?: course.mainParking
     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(48.dp)) {
         // 왼쪽: 코스 진행 상황
         Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(28.dp)).background(C.surface).padding(36.dp)) {
@@ -339,11 +344,24 @@ private fun RunScreen(vm: DriveViewModel, ui: UiState, v: VehicleState) {
                 is RunPhase.Visiting -> phase.stopIndex
                 else -> course.stops.size
             }
+            // 지연을 알면 남은 장소의 도착 시각을 그만큼 옮겨 보여 준다 (원래 계획은 그대로 둔다)
+            val shift = ui.delayMin ?: 0
+            ui.delayMin?.let { d ->
+                val (text, color) = when {
+                    d >= 5 -> "예정보다 ${d}분 늦어요" to C.busy
+                    d <= -5 -> "예정보다 ${-d}분 빨라요" to C.good
+                    else -> "예정대로 가고 있어요" to C.good
+                }
+                Text("$text · 종료 예상 ${(course.endMinuteOfDay + shift).toClock()}", color = color,
+                    style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(12.dp))
+            }
             course.mainParking?.let {
                 StepRow("P", it.name, "주차", done = phase !is RunPhase.DrivingTo, active = phase is RunPhase.DrivingTo)
             }
             course.stops.forEachIndexed { i, s ->
-                StepRow("${i + 1}", s.place.name, "${s.arriveMinuteOfDay.toClock()} · ${s.place.category.label}",
+                val time = (s.arriveMinuteOfDay + if (i >= current) shift else 0).toClock()
+                StepRow("${i + 1}", s.place.name, "$time · ${s.place.category.label}",
                     done = i < current, active = i == current && phase is RunPhase.Visiting)
             }
         }
@@ -374,9 +392,14 @@ private fun RunScreen(vm: DriveViewModel, ui: UiState, v: VehicleState) {
                         RouteStatus.GUIDING -> SecondaryButton("도착했어요") { vm.markArrived() }
                         RouteStatus.REQUESTING -> CircularProgressIndicator(color = C.accent, modifier = Modifier.size(56.dp))
                     }
+                    // 배터리가 적을 때: 이 단계에서 주차장 대신 충전소로 안내 바꾸기 (정차 중에만)
+                    course.charge?.takeIf { it.stopIndex == phase.stopIndex && phase.target.point != it.charger.point && !v.restricted }?.let { ch ->
+                        Spacer(Modifier.height(14.dp))
+                        SecondaryButton("⚡ 충전소 후보로 안내 바꾸기 · ${ch.charger.name}") { vm.routeToCharger() }
+                    }
                     if (phase.route == RouteStatus.FAILED) {
                         Spacer(Modifier.height(14.dp))
-                        SecondaryButton("내비 없이 도착 처리") { vm.markArrived() }
+                        SecondaryButton("도착 처리") { vm.markArrived() }
                     }
                 }
                 is RunPhase.Visiting -> {
@@ -386,25 +409,46 @@ private fun RunScreen(vm: DriveViewModel, ui: UiState, v: VehicleState) {
                         style = MaterialTheme.typography.titleLarge)
                     Text(stop.place.name, style = MaterialTheme.typography.displaySmall)
                     Spacer(Modifier.height(16.dp))
-                    Text("도보 ${stop.walkInM}m · 약 ${(stop.walkInM / 66.7).roundToInt()}분 · ${stop.place.category.label}",
+                    // 충전소에 세웠으면 충전소에서 걷는 거리로 보여 준다
+                    val parkedAtCharger = course.charge?.takeIf { ui.chargeChosen && it.stopIndex == phase.stopIndex }?.charger
+                    val walkIn = parkedAtCharger?.let { Geo.walkM(it.point, stop.place.point) } ?: stop.walkInM
+                    Text("도보 ${walkIn}m · 약 ${Geo.walkMin(walkIn)}분 · ${stop.place.category.label}",
                         color = C.sub, style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(48.dp))
                     if (course.mode == CourseMode.DRIVE_AND_HOP) {
                         if (!isLast) {
                             PrimaryButton("다음 장소로 안내", enabled = true) { vm.goToNextStop() }
+                            course.charge?.takeIf { it.stopIndex == phase.stopIndex + 1 }?.let { ch ->
+                                Spacer(Modifier.height(14.dp))
+                                ToggleRow("⚡ 다음은 충전소로 안내 · ${ch.charger.name} (충전소 후보 · 이용 가능 여부 확인 필요)", ui.chargeChosen) {
+                                    vm.chooseChargerNext(it)
+                                }
+                            }
                             Spacer(Modifier.height(14.dp))
                             Text("둘러본 뒤 다시 출발하면 다음 장소 안내가 자동으로 시작돼요", color = C.sub,
                                 style = MaterialTheme.typography.bodyMedium)
                         } else PrimaryButton("코스 마치기", enabled = true) { vm.finish() }
                     } else {
                         PrimaryButton(if (isLast) "코스 마치기" else "다음 장소", enabled = true) { vm.nextWalkStop() }
+                        // 한 번 주차형: 지금 장소에서 차까지 얼마나 걸어야 하는지 늘 보여 준다
+                        carLot?.takeIf { it.id != com.recodate.drive.engine.CourseRecommender.NO_LOT_ID }?.let { lot ->
+                            Spacer(Modifier.height(14.dp))
+                            ReturnToCar(lot.name, Geo.walkM(stop.place.point, lot.point), emphasize = isLast)
+                        }
+                    }
+                    if (phase.autoArrived) {
+                        Spacer(Modifier.height(14.dp))
+                        SecondaryButton("아직 도착 전이에요") { vm.undoAutoArrival() }
                     }
                 }
                 RunPhase.Finished, null -> {
                     Text("코스 완료!", style = MaterialTheme.typography.displaySmall, color = C.accent)
-                    course.mainParking?.let {
+                    carLot?.let {
                         Spacer(Modifier.height(16.dp))
                         Text("차는 ${it.name}에 있어요", style = MaterialTheme.typography.titleLarge)
+                        val walk = Geo.walkM(course.stops.last().place.point, it.point)
+                        Text("마지막 장소에서 도보 약 ${walk}m · ${Geo.walkMin(walk)}분 (예상)", color = C.sub,
+                            style = MaterialTheme.typography.titleMedium)
                     }
                     Spacer(Modifier.height(48.dp))
                     PrimaryButton("처음으로", enabled = true) { vm.backToHome() }
@@ -413,6 +457,22 @@ private fun RunScreen(vm: DriveViewModel, ui: UiState, v: VehicleState) {
             Spacer(Modifier.height(20.dp))
             if (!v.restricted && phase !is RunPhase.Finished) SecondaryButton("코스 그만하기") { vm.backToHome() }
         }
+    }
+}
+
+/** 차로 돌아가는 길 안내 (직선거리 기반 예상 도보) */
+@Composable
+private fun ReturnToCar(lotName: String, walkM: Int, emphasize: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+            .background(if (emphasize) C.accentDim else C.surface).padding(horizontal = 24.dp, vertical = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.LocalParking, null, tint = C.info, modifier = Modifier.size(32.dp))
+        Spacer(Modifier.width(14.dp))
+        Text("차까지 약 ${walkM}m · 도보 ${Geo.walkMin(walkM)}분 ($lotName)",
+            style = MaterialTheme.typography.titleMedium, color = if (emphasize) C.text else C.sub,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

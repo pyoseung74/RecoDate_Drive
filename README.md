@@ -71,7 +71,7 @@ Pleos Connect 에뮬레이터에서 실제 데이터로 녹화했습니다. 내�
 2. `local.properties`에 API 키를 넣습니다(선택). 키가 없으면 강릉 데모 데이터로 동작합니다. → [docs/API_KEYS.md](docs/API_KEYS.md)
 3. `gradlew assembleRelease` (결과: `app/build/outputs/apk/release/app-release.apk`)
 
-- 단위 테스트: `gradlew testDebugUnitTest` (32개, 재생 데이터가 없으면 재생 테스트 1개는 건너뜀)
+- 단위 테스트: `gradlew testDebugUnitTest` (44개, 재생 데이터가 없으면 재생 테스트 1개는 건너뜀)
 - Windows 사용자 폴더 이름에 한글이 있으면 테스트 실행과 에뮬레이터 부팅이 실패할 수 있습니다. 영문 경로(예: `subst P: ...`)와 `GRADLE_USER_HOME=C:\Android\gradle-home`을 쓰면 됩니다.
 
 ## 구조

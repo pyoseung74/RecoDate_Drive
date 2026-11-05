@@ -1,5 +1,6 @@
 package com.recodate.drive.engine
 
+import com.recodate.drive.model.ChargeSuggestion
 import com.recodate.drive.model.CongestionLevel
 import com.recodate.drive.model.Course
 import com.recodate.drive.model.CourseMode
@@ -51,6 +52,8 @@ class CourseRecommender(
         const val DH_ANCHOR_MAX_PARK_WALK_M = 700
         /** 주차장 정보가 없을 때 목적지 자체를 주차 지점으로 쓰는 가상 주차장 id */
         const val NO_LOT_ID = "no-lot"
+        /** 한 번 주차형: 주차장 대신 세울 충전소는 주차장에서 이 도보 거리 안이어야 한다 */
+        const val PW_CHARGER_NEAR_LOT_M = 150
         private const val OVERLAP_PENALTY = 0.3
     }
 
@@ -83,9 +86,10 @@ class CourseRecommender(
                 it.copy(warnings = it.warnings + "주차장 정보가 없어 목적지로 안내해요. 도착 후 근처에 주차하세요")
             }
         }
-        val energyNotes = energyNotes(request, places, courses)
+        // 충전소·주유소 거리는 코스마다 그 코스의 첫 목적지 기준으로 계산한다
         return courses
-            .map { it.copy(warnings = it.warnings + energyNotes) }
+            .map { it.copy(warnings = it.warnings + energyNotes(request, places, it)) }
+            .map { withChargeSuggestion(request, places, it) }
             .sortedWith(compareByDescending<Course> { it.score }
                 .thenBy { it.totalWalkM + it.totalDriveMin * 100 }
                 .thenBy { it.id })
@@ -451,12 +455,50 @@ class CourseRecommender(
         return "${lot.name}: $congestion$fee"
     }
 
+    /**
+     * 전기차 배터리가 적으면, 머무는 동안 충전할 수 있는 근처 충전소 "후보"를 붙인다 (경로는 사용자가 고를 때만 바꾼다).
+     * - 차로 이동형: 60분 이상 머무는 장소에서 걸어서 260m(장소↔주차장 상한) 안의 충전소. 그 장소 단계에서 바꾼다.
+     * - 한 번 주차형: 주차장에서 걸어서 150m 안의 충전소. 주차 위치가 거의 같아 도보 일정이 크게 달라지지 않는다.
+     * 충전소는 배터리가 적을 때만 이미 받아 둔 장소 목록에서 고른다(추가 API 호출 없음). 방문객이 못 쓰는 이름은 뺀다.
+     * 충전기 종류·운영 여부·빈자리는 모르므로 화면에는 "후보 · 확인 필요"로 표시한다.
+     */
+    private fun withChargeSuggestion(req: CourseRequest, all: List<Place>, course: Course): Course {
+        if (!req.energy.isLow || !req.energy.isEv) return course
+        val chargers = all.filter { it.category == EV_CHARGER && !isResidentOnlyParking(it.name) }
+        if (chargers.isEmpty()) return course
+        fun nearest(p: GeoPoint) = chargers.minByOrNull { Geo.walkM(it.point, p) }
+        val best = if (course.mode == CourseMode.PARK_AND_WALK) {
+            val lot = course.mainParking?.takeIf { it.id != NO_LOT_ID } ?: return course
+            val ch = nearest(lot.point) ?: return course
+            val walk = Geo.walkM(ch.point, lot.point)
+            if (walk > PW_CHARGER_NEAR_LOT_M) return course
+            val stay = course.endMinuteOfDay - (course.stops.first().arriveMinuteOfDay - Geo.walkMin(course.stops.first().walkInM))
+            ChargeSuggestion(ch, 0, course.stops.first().place, walk, stay)
+        } else {
+            course.stops.withIndex()
+                .filter { it.value.place.category.stayMin >= 60 }
+                .mapNotNull { (i, stop) ->
+                    val ch = nearest(stop.place.point) ?: return@mapNotNull null
+                    val walk = Geo.walkM(ch.point, stop.place.point)
+                    if (walk > DH_MAX_PARK_WALK_M) null
+                    else ChargeSuggestion(ch, i, stop.place, walk, stop.place.category.stayMin)
+                }
+                // 오래 머무는 곳 우선, 같으면 가까운 곳
+                .sortedWith(compareByDescending<ChargeSuggestion> { it.stayMin }.thenBy { it.walkM })
+                .firstOrNull() ?: return course
+        }
+        val reason = if (course.mode == CourseMode.PARK_AND_WALK)
+            "주차장 근처 충전소 후보: ${best.charger.name} (주차장에서 도보 ${best.walkM}m · 이용 가능 여부 확인 필요)"
+        else "${best.forPlace.name}에서 ${best.stayMin}분 머무는 동안 쓸 수 있는 충전소 후보: ${best.charger.name} (도보 ${best.walkM}m · 이용 가능 여부 확인 필요)"
+        return course.copy(charge = best, reasons = course.reasons + reason)
+    }
+
     /** 배터리·연료가 적으면 경고하고 가까운 충전소·주유소를 알려 준다 (주행 가능 거리 계산은 하지 않음) */
-    private fun energyNotes(req: CourseRequest, all: List<Place>, courses: List<Course>): List<String> {
+    private fun energyNotes(req: CourseRequest, all: List<Place>, course: Course): List<String> {
         val e = req.energy
         if (!e.isLow) return emptyList()
         val kind = if (e.isEv) EV_CHARGER else GAS_STATION
-        val near = courses.firstOrNull()?.firstNaviTarget?.point ?: req.anchor.point
+        val near = course.firstNaviTarget.point
         val station = all.filter { it.category == kind }.minByOrNull { Geo.distanceM(it.point, near) }
         val what = if (e.isEv) "배터리" else "연료"
         val tail = station?.let { " · 근처 ${kind.label}: ${it.name} (${(Geo.distanceM(it.point, near) / 1000).let { d -> "%.1f".format(d) }}km)" } ?: ""
@@ -484,7 +526,13 @@ fun Course.withLiveDriveToStart(liveMin: Int): Course {
         driveToStartIsLive = true,
         totalDriveMin = totalDriveMin + delta,
         endMinuteOfDay = endMinuteOfDay + delta,
-        stops = stops.map { it.copy(arriveMinuteOfDay = it.arriveMinuteOfDay + delta) },
+        stops = stops.mapIndexed { i, s ->
+            s.copy(
+                arriveMinuteOfDay = s.arriveMinuteOfDay + delta,
+                // 차로 이동형의 첫 장소는 "차로 몇 분"도 실시간 값으로 맞춘다
+                driveInMin = if (i == 0 && mode == CourseMode.DRIVE_AND_HOP) liveMin else s.driveInMin,
+            )
+        },
         reasons = reasons + "실시간 교통 반영 · 첫 도착 ${stops.first().arriveMinuteOfDay.plus(delta).toClock()}",
     )
 }

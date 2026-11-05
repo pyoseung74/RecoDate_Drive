@@ -162,6 +162,8 @@ data class Course(
     val warnings: List<String>,
     /** 조건에 맞는 코스가 없어 도보 거리 제한을 늘려 만든 코스인지 */
     val relaxedLimits: Boolean = false,
+    /** 전기차 배터리가 적을 때: 오래 머무는 장소 근처 충전소 제안 (자동으로 경로를 바꾸지는 않는다) */
+    val charge: ChargeSuggestion? = null,
 ) {
     /** 내비에 처음 넣을 목적지 (주차장 우선) */
     val firstNaviTarget: NaviTarget
@@ -172,6 +174,20 @@ data class Course(
             else NaviTarget(stops.first().place.name, stops.first().place.point, isParking = false)
         }
 }
+
+/**
+ * 머무는 동안 충전할 수 있는 충전소 후보.
+ * stopIndex: 이 충전소로 안내를 바꿀 수 있는 단계 (차로 이동형 = 그 장소, 한 번 주차형 = 0)
+ * 충전기 종류·빈자리는 알 수 없으므로 "후보"로만 보여 준다.
+ */
+data class ChargeSuggestion(
+    val charger: Place,
+    val stopIndex: Int,
+    val forPlace: Place,
+    /** 충전소 ↔ 장소(차로 이동형) 또는 충전소 ↔ 주차장(한 번 주차형) 예상 도보(m) */
+    val walkM: Int,
+    val stayMin: Int,
+)
 
 data class NaviTarget(val name: String, val point: GeoPoint, val isParking: Boolean)
 
