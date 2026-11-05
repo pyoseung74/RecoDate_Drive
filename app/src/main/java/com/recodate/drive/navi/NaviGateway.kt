@@ -26,8 +26,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** 이벤트를 받은 시각(System.nanoTime). 요청보다 먼저 받은 이벤트를 걸러 내는 데 쓴다 */
@@ -92,8 +90,6 @@ class PleosNaviGateway(context: Context) : NaviGateway {
     private var pendingDestination: CompletableDeferred<DestinationInfo?>? = null
     private var pendingRecent: CompletableDeferred<List<RecentDestinationInfo>>? = null
     private var pendingBookmark: CompletableDeferred<List<BookmarkInfo>>? = null
-    /** get*Info() 결과를 한 칸짜리 대기자로 받기 때문에, 조회는 한 번에 하나씩만 한다 (겹치면 응답이 섞임) */
-    private val query = Mutex()
     @Volatile private var navigationStatus: NavigationStatus? = null
 
     private val listener = object : NaviHelperEventListener {
@@ -136,55 +132,47 @@ class PleosNaviGateway(context: Context) : NaviGateway {
     }
 
     override suspend fun currentLocation(): GeoPoint? {
-        query.withLock {
-            if (!_connected.value) return null
-            val d = CompletableDeferred<CurrentLocationInfo>().also { pendingLocation = it }
-            runCatching { helper.getCurrentLocationInfo() }.onFailure { return null }
-            return withTimeoutOrNull(2_500) { d.await() }
-                ?.takeIf { !(it.latitude == 0.0 && it.longitude == 0.0) }
-                ?.let { Log.d(TAG, "current location ${it.latitude},${it.longitude}"); GeoPoint(it.latitude, it.longitude) }
-        }
+        if (!_connected.value) return null
+        val d = CompletableDeferred<CurrentLocationInfo>().also { pendingLocation = it }
+        runCatching { helper.getCurrentLocationInfo() }.onFailure { return null }
+        return withTimeoutOrNull(2_500) { d.await() }
+            ?.takeIf { !(it.latitude == 0.0 && it.longitude == 0.0) }
+            ?.let { Log.d(TAG, "current location ${it.latitude},${it.longitude}"); GeoPoint(it.latitude, it.longitude) }
     }
 
     override suspend fun currentDestination(): Anchor? {
-        query.withLock {
-            if (!_connected.value) return null
-            val d = CompletableDeferred<DestinationInfo?>().also { pendingDestination = it }
-            runCatching { helper.getDestinationInfo() }.onFailure { return null }
-            val info = withTimeoutOrNull(2_500) { d.await() } ?: return null
-            if ((info.latitude == 0.0 && info.longitude == 0.0) || info.name.isBlank()) return null
-            return Anchor(info.name, GeoPoint(info.latitude, info.longitude), place = null)
-        }
+        if (!_connected.value) return null
+        val d = CompletableDeferred<DestinationInfo?>().also { pendingDestination = it }
+        runCatching { helper.getDestinationInfo() }.onFailure { return null }
+        val info = withTimeoutOrNull(2_500) { d.await() } ?: return null
+        if ((info.latitude == 0.0 && info.longitude == 0.0) || info.name.isBlank()) return null
+        return Anchor(info.name, GeoPoint(info.latitude, info.longitude), place = null)
     }
 
     override suspend fun recentDestinations(): List<Anchor> {
-        query.withLock {
-            if (!_connected.value) return emptyList()
-            val r = CompletableDeferred<List<RecentDestinationInfo>>().also { pendingRecent = it }
-            val b = CompletableDeferred<List<BookmarkInfo>>().also { pendingBookmark = it }
-            runCatching { helper.getRecentDestinationInfo(); helper.getBookmarkInfo() }
-            val recent = withTimeoutOrNull(2_500) { r.await() }.orEmpty()
-                .map { Anchor(it.name, GeoPoint(it.latitude, it.longitude)) }
-            val marks = withTimeoutOrNull(1_000) { b.await() }.orEmpty()
-                .map { Anchor(it.name, GeoPoint(it.latitude, it.longitude)) }
-            // 이름이 비었거나 좌표가 (0,0)인 빈 항목은 뺀다
-            return (marks + recent)
-                .filter { it.name.isNotBlank() && !(it.point.lat == 0.0 && it.point.lon == 0.0) }
-                .distinctBy { it.name }.take(6)
-        }
+        if (!_connected.value) return emptyList()
+        val r = CompletableDeferred<List<RecentDestinationInfo>>().also { pendingRecent = it }
+        val b = CompletableDeferred<List<BookmarkInfo>>().also { pendingBookmark = it }
+        runCatching { helper.getRecentDestinationInfo(); helper.getBookmarkInfo() }
+        val recent = withTimeoutOrNull(2_500) { r.await() }.orEmpty()
+            .map { Anchor(it.name, GeoPoint(it.latitude, it.longitude)) }
+        val marks = withTimeoutOrNull(1_000) { b.await() }.orEmpty()
+            .map { Anchor(it.name, GeoPoint(it.latitude, it.longitude)) }
+        // 이름이 비었거나 좌표가 (0,0)인 빈 항목은 뺀다
+        return (marks + recent)
+            .filter { it.name.isNotBlank() && !(it.point.lat == 0.0 && it.point.lon == 0.0) }
+            .distinctBy { it.name }.take(6)
     }
 
     override suspend fun activeRoute(): ActiveRoute? {
-        query.withLock {
-            if (!_connected.value) return null
-            val d = CompletableDeferred<DestinationInfo?>().also { pendingDestination = it }
-            runCatching { helper.getDestinationInfo() }.onFailure { return null }
-            val dest = withTimeoutOrNull(2_500) { d.await() } ?: return null
-            val point = dest.takeIf { !(it.latitude == 0.0 && it.longitude == 0.0) }?.let { GeoPoint(it.latitude, it.longitude) }
-            val guiding = navigationStatus?.let { it == NavigationStatus.ROUTE_DRIVE }
-            Log.d(TAG, "activeRoute guiding=$guiding status=$navigationStatus dest='${dest.name}' $point")
-            return ActiveRoute(guiding, dest.name, point)
-        }
+        if (!_connected.value) return null
+        val d = CompletableDeferred<DestinationInfo?>().also { pendingDestination = it }
+        runCatching { helper.getDestinationInfo() }.onFailure { return null }
+        val dest = withTimeoutOrNull(2_500) { d.await() } ?: return null
+        val point = dest.takeIf { !(it.latitude == 0.0 && it.longitude == 0.0) }?.let { GeoPoint(it.latitude, it.longitude) }
+        val guiding = navigationStatus?.let { it == NavigationStatus.ROUTE_DRIVE }
+        Log.d(TAG, "activeRoute guiding=$guiding status=$navigationStatus dest='${dest.name}' $point")
+        return ActiveRoute(guiding, dest.name, point)
     }
 
     override fun startRoute(target: NaviTarget): Boolean {

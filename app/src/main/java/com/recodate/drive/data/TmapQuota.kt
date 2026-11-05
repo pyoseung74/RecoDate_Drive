@@ -29,10 +29,8 @@ class TmapQuota(
     /** 1건을 쓸 수 있으면 차감하고 true. 하루·한 달 상한 중 하나라도 차면 false (호출하면 안 됨) */
     @Synchronized
     fun tryAcquire(api: TmapApi): Boolean {
-        // 날짜는 한 번만 읽는다 (자정·월말에 일·월 키가 서로 다른 날짜를 가리키지 않게)
-        val date = today()
-        val d = dayKey(api, date)
-        val m = monthKey(api, date)
+        val d = dayKey(api)
+        val m = monthKey(api)
         val usedDay = store.get(d)
         val usedMonth = store.get(m)
         if (usedDay >= dailyLimit(api) || usedMonth >= monthlyLimit(api)) return false
@@ -51,8 +49,8 @@ class TmapQuota(
         "${api.label} 오늘 ${usedToday(api)}/${dailyLimit(api)}, 이번 달 ${usedThisMonth(api)}/${monthlyLimit(api)}"
     }
 
-    private fun dayKey(api: TmapApi, date: LocalDate = today()) = "d:$date:${api.name}"
-    private fun monthKey(api: TmapApi, date: LocalDate = today()) = "m:${date.toString().take(7)}:${api.name}"
+    private fun dayKey(api: TmapApi) = "d:${today()}:${api.name}"
+    private fun monthKey(api: TmapApi) = "m:${today().toString().take(7)}:${api.name}"
 }
 
 enum class TmapApi(val label: String, private val publishedFreePerDay: Int) {

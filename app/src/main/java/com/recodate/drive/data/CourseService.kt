@@ -4,7 +4,6 @@ import com.recodate.drive.engine.CourseRecommender
 import com.recodate.drive.engine.Geo
 import com.recodate.drive.engine.ParkingPredictor
 import com.recodate.drive.engine.withLiveDriveToStart
-import com.recodate.drive.engine.withSunsetNotes
 import com.recodate.drive.model.Anchor
 import com.recodate.drive.model.Course
 import com.recodate.drive.model.CourseMode
@@ -113,10 +112,6 @@ class CourseService(
                 }
             }.awaitAll()
         }
-
-        // 실시간 교통으로 시각이 옮겨진 최종 일정 기준으로 일몰을 확인한다 (인터넷 없이 계산)
-        val sunset = com.recodate.drive.engine.SunTimes.sunsetMinuteKst(anchor.point, t.toLocalDate())
-        courses = courses.map { it.withSunsetNotes(minute, sunset) }
 
         Recommendation(
             request = request,
