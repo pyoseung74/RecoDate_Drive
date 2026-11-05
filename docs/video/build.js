@@ -1,5 +1,5 @@
 // 시연 영상 v2: 차량 화면 프레임 + 장면별 확대 + 장면 제목 + 전환 + 배경음 + 자막 (ffmpeg)
-// 사용: node build.js   (작업 폴더 C:\Android\video 에 raw/ 녹화본과 tts/ 내레이션이 있어야 함)
+// 사용: node build.js   (작업 폴더 C:\Android\video 에 raw/ 녹화본과 tts_edge/ 내레이션(tts_edge.js)이 있어야 함)
 // 결과: C:\Android\video\v2\RecoDate_Drive_demo.mp4 와 sub.srt
 const fs = require("fs");
 const path = require("path");
@@ -8,6 +8,7 @@ const { execFileSync } = require("child_process");
 const scenes = JSON.parse(fs.readFileSync(path.join(__dirname, "script.json"), "utf8"));
 process.chdir("C:/Android/video");
 const OUT = "v2";
+const TTS = process.env.TTS_DIR || "tts_edge"; // tts = 예전 Heami 음성
 for (const d of [OUT, `${OUT}/seg`, `${OUT}/txt`]) fs.mkdirSync(d, { recursive: true });
 
 const FF = "C:/Android/ffmpeg/ffmpeg.exe";
@@ -123,27 +124,17 @@ function renderCard(kind, D, out) {
 }
 
 // ---------- 배경음: 부드러운 패드 화음, 내레이션이 나오면 자동으로 작아짐 ----------
+// 음원 파일을 BGM_FILE로 주면 그 곡을, 없으면 bgm.js로 직접 작곡한 곡을 쓴다.
 function buildBgm(total) {
-  const chords = [
-    [130.81, 164.81, 196.0, 246.94], // Cmaj7
-    [110.0, 130.81, 164.81, 196.0],  // Am7
-    [87.31, 110.0, 130.81, 164.81],  // Fmaj7
-    [98.0, 123.47, 146.83, 164.81],  // G6
-  ];
-  const L = 5.5, X = 1.5;
-  const n = Math.ceil((total + 4) / (L - X));
-  const src = [];
-  for (let i = 0; i < n; i++) {
-    const notes = chords[i % 4];
-    const ex = notes.map((f) => `0.09*sin(2*PI*${f}*t)+0.05*sin(2*PI*${(f * 1.004).toFixed(3)}*t)+0.015*sin(2*PI*${2 * f}*t)`).join("+");
-    src.push(`aevalsrc='${ex}':s=48000:d=${L},afade=t=in:d=1.4,afade=t=out:st=${L - 1.6}:d=1.6[c${i}]`);
+  let src = process.env.BGM_FILE;
+  if (!src) {
+    src = `${OUT}/bgm_src.wav`;
+    execFileSync(process.execPath, [path.join(__dirname, "bgm.js"), (total + 1).toFixed(2), src], { stdio: "inherit" });
   }
-  let chain = "", last = "c0";
-  for (let i = 1; i < n; i++) { chain += `[${last}][c${i}]acrossfade=d=${X}:c1=tri:c2=tri[m${i}];`; last = `m${i}`; }
-  run(["-filter_complex",
-    `${src.join(";")};${chain}[${last}]lowpass=f=1500,aecho=0.8:0.6:180|360:0.22|0.12,pan=stereo|c0=c0|c1=c0,` +
-    `atrim=0:${total.toFixed(3)},loudnorm=I=-31:TP=-8:LRA=7[a]`,
-    "-map", "[a]", "-ar", "48000", `${OUT}/bgm.wav`]);
+  run(["-stream_loop", "-1", "-i", src, "-af",
+    `atrim=0:${total.toFixed(3)},afade=t=in:d=1.5,afade=t=out:st=${(total - 3).toFixed(3)}:d=3,` +
+    `highpass=f=35,aformat=sample_rates=48000:channel_layouts=stereo,loudnorm=I=-30:TP=-8:LRA=7`,
+    "-ar", "48000", `${OUT}/bgm.wav`]);
 }
 
 // ---------- 자막 ----------
@@ -165,7 +156,7 @@ if (!process.argv.includes("--skip-assets")) buildAssets();
 
 let S = 0;
 const plan = scenes.map((s, i) => {
-  const narr = dur(`tts/${s.id}.wav`);
+  const narr = dur(`${TTS}/${s.id}.wav`);
   const at = s.narrAt ?? NARR_AT;
   const D = Math.max(s.len, at + narr + TAIL);
   const p = { s, i, narr, at, D, start: S, seg: `${OUT}/seg/${String(i).padStart(2, "0")}_${s.id}.mp4` };
@@ -211,7 +202,7 @@ buildBgm(total);
 // 장면 이어 붙이기 + 오디오 섞기 + 자막
 const inputs = [];
 plan.forEach((p) => inputs.push("-i", p.seg));
-plan.forEach((p) => inputs.push("-i", `tts/${p.s.id}.wav`));
+plan.forEach((p) => inputs.push("-i", `${TTS}/${p.s.id}.wav`));
 inputs.push("-i", `${OUT}/bgm.wav`);
 const N = plan.length;
 let vf = "", last = "0:v";
@@ -227,7 +218,7 @@ const af = plan.map((p, i) => {
   `;${plan.map((_, i) => `[n${i}]`).join("")}amix=inputs=${N}:normalize=0:dropout_transition=0[narr];[narr]asplit[na][nk];` +
   `[${2 * N}:a]aformat=sample_rates=48000:channel_layouts=stereo[bg];` +
   `[bg][nk]sidechaincompress=threshold=0.012:ratio=6:attack=30:release=900:makeup=1[bgd];` +
-  `[na][bgd]amix=inputs=2:normalize=0:duration=longest,volume=5.5dB,apad,atrim=0:${total.toFixed(3)},afade=t=out:st=${(total - 1.2).toFixed(3)}:d=1.2[a]`;
+  `[na][bgd]amix=inputs=2:normalize=0:duration=longest,volume=1.5dB,apad,atrim=0:${total.toFixed(3)},afade=t=out:st=${(total - 1.2).toFixed(3)}:d=1.2[a]`;
 run([...inputs, "-filter_complex", vf + af, "-map", "[v]", "-map", "[a]",
   "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-r", "30",
   "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-t", total.toFixed(3), `${OUT}/RecoDate_Drive_demo.mp4`]);
